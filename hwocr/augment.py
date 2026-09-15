@@ -340,20 +340,53 @@ def apply_augment(img: np.ndarray, rng: random.Random, heavy: bool = False) -> n
 # ---------------------------------------------------------------------------
 # model input
 # ---------------------------------------------------------------------------
+def ink_bbox(mask: np.ndarray, coverage: float = 0.03) -> tuple[int, int, int, int] | None:
+    """Robust bounding box of the ink: (x0, y0, x1, y1) or ``None``.
+
+    Rows/columns whose ink mass is below ``coverage`` of the busiest one are
+    ignored, so dust specks in a corner or a 1 px scratch can no longer blow up
+    the crop.  (A blown-up crop is not just a cosmetic problem: the image gets
+    scaled down so much that the letters become unreadable and the CTC
+    sequence becomes shorter than its label.)
+    """
+    if mask.size == 0:
+        return None
+    row_profile = mask.sum(axis=1)
+    col_profile = mask.sum(axis=0)
+    if row_profile.max() <= 0 or col_profile.max() <= 0:
+        return None
+
+    def span(profile: np.ndarray) -> tuple[int, int] | None:
+        threshold = max(2, int(coverage * profile.max()))
+        indices = np.where(profile >= threshold)[0]
+        if indices.size == 0:
+            indices = np.where(profile > 0)[0]
+        if indices.size == 0:
+            return None
+        return int(indices[0]), int(indices[-1])
+
+    rows = span(row_profile)
+    cols = span(col_profile)
+    if rows is None or cols is None:
+        return None
+    return cols[0], rows[0], cols[1], rows[1]
+
+
 def crop_ink(img: np.ndarray, margin: int = 2) -> np.ndarray:
     """Crop to the ink bounding box (keeps a small white margin).
 
-    Uses :func:`ink_mask`, so shaded backgrounds and inverted images are
-    handled correctly.  Falls back to the whole image when no ink is found.
+    Uses :func:`ink_mask` + :func:`ink_bbox`, so shaded backgrounds, inverted
+    images and stray specks are handled correctly.  Falls back to the whole
+    image when no ink is found.
     """
     gray = ensure_gray(img)
     mask = ink_mask(gray)
-    rows = np.where(mask.any(axis=1))[0]
-    cols = np.where(mask.any(axis=0))[0]
-    if rows.size == 0 or cols.size == 0:
+    box = ink_bbox(mask)
+    if box is None:
         return gray
-    y0, y1 = max(0, int(rows[0]) - margin), min(gray.shape[0], int(rows[-1]) + 1 + margin)
-    x0, x1 = max(0, int(cols[0]) - margin), min(gray.shape[1], int(cols[-1]) + 1 + margin)
+    x0, y0, x1, y1 = box
+    y0, y1 = max(0, y0 - margin), min(gray.shape[0], y1 + 1 + margin)
+    x0, x1 = max(0, x0 - margin), min(gray.shape[1], x1 + 1 + margin)
     return gray[y0:y1, x0:x1]
 
 
