@@ -80,12 +80,15 @@ def evaluate_loader(
 
 
 def apply_lexicon_decoding(result: EvalResult,
-                           corrector: "postprocess.WordCorrector | None" = None) -> EvalResult:
+                           corrector: "postprocess.WordCorrector | None" = None,
+                           lexicon_words: Sequence[str] | None = None) -> EvalResult:
     """Adds a second report computed on lexicon-corrected hypotheses."""
     from .postprocess import WordCorrector
     from .lexicon import default_lexicon
 
-    corrector = corrector or WordCorrector(default_lexicon())
+    if corrector is None:
+        words = list(lexicon_words) if lexicon_words else None
+        corrector = WordCorrector(words or default_lexicon())
     report = metrics.Report()
     for reference, hypothesis in result.pairs:
         corrected = corrector.correct_text(hypothesis)
@@ -107,13 +110,14 @@ def evaluate_split(
     device: torch.device = torch.device("cpu"),
     max_errors: int = 0,
     lexicon_decode: bool = False,
+    lexicon_words: Sequence[str] | None = None,
 ) -> EvalResult:
     dataset = ds.OnDiskDataset(root, cfg)
     loader = ds.make_loader(dataset, cfg, shuffle=False, workers=0)
     result = evaluate_loader(model, cfg, loader, device, name=Path(root).name,
                              max_errors=max_errors)
     if lexicon_decode:
-        apply_lexicon_decoding(result)
+        apply_lexicon_decoding(result, lexicon_words=lexicon_words)
     return result
 
 
@@ -157,13 +161,14 @@ def evaluate_checkpoint(
     max_errors: int = 0,
     error_dir: str | Path | None = None,
     lexicon_decode: bool = False,
+    lexicon_words: Sequence[str] | None = None,
 ) -> dict[str, EvalResult]:
     """Evaluate one checkpoint on several exported splits."""
     model, cfg, _ = model_mod.load_checkpoint(checkpoint, device=device)
     results: dict[str, EvalResult] = {}
     for name, root in splits.items():
         result = evaluate_split(model, cfg, root, torch.device(device), max_errors=max_errors,
-                                lexicon_decode=lexicon_decode)
+                                lexicon_decode=lexicon_decode, lexicon_words=lexicon_words)
         results[name] = result
         print(f"[eval] {result.line()}", flush=True)
         if lexicon_decode:

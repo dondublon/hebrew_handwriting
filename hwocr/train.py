@@ -41,10 +41,16 @@ def build_datasets(
         real_set = ds.OnDiskDataset(real_dir, cfg)
         if len(real_set) == 0:  # pragma: no cover - empty folder
             raise ValueError(f"no labelled samples found in {real_dir}")
+        repeats = max(1, int(round(cfg.real_repeats_target / max(1, len(real_set)))))
+        real_set = ds.RealLineDataset(real_dir, cfg, repeats=repeats,
+                                      augment_prob=cfg.real_augment_prob,
+                                      heavy_prob=min(cfg.p_heavy_aug, 0.3),
+                                      seed=cfg.seed)
         train_set = ds.MixedLineDataset(cfg, train_set, real_set, p_real=p_real,
                                         seed=cfg.seed)
-        print(f"[train] mixing {len(real_set)} hand-labelled sample(s) from "
-              f"{real_dir} with p={p_real:.2f}", flush=True)
+        print(f"[train] hand-labelled data: {len(real_set.entries)} label(s) x {repeats} "
+              f"augmented copies = {len(real_set)} samples, mixed with p={p_real:.2f}",
+              flush=True)
     val_set = ds.SyntheticLineDataset(cfg, specs, seed=ds.VAL_SEED, length=cfg.val_samples,
                                       heavy_prob=cfg.p_heavy_aug, words=words)
     return train_set, val_set

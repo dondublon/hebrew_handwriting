@@ -141,8 +141,9 @@ def _discover_splits(root: Path) -> dict[str, Path]:
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
-    from . import evaluate
+    from . import evaluate, lexicon as lexicon_mod
 
+    extra_words = lexicon_mod.load_user_lexicon(args.lexicon) if args.lexicon else None
     if args.split:
         splits = {Path(item).name: Path(item) for item in args.split}
     else:
@@ -152,7 +153,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         return 2
     results = evaluate.evaluate_checkpoint(
         args.checkpoint, splits, max_errors=args.save_errors, error_dir=args.errors_dir,
-        lexicon_decode=args.lexicon_decode,
+        lexicon_decode=args.lexicon_decode, lexicon_words=extra_words,
     )
     print("\n[cli] summary")
     for name, result in results.items():
@@ -281,7 +282,9 @@ def _annotate(image, page) -> "object":
 def cmd_recognize(args: argparse.Namespace) -> int:
     from . import ocr
 
-    recognizer = ocr.Recognizer.load(args.checkpoint, lexicon_decode=args.lexicon_decode)
+    words = _load_words(args)
+    recognizer = ocr.Recognizer.load(args.checkpoint, lexicon_decode=args.lexicon_decode,
+                                     lexicon_words=words)
     page = recognizer.recognize_page(args.image, segment=not args.no_segment)
     if args.json:
         print(json.dumps(page.as_dict(), ensure_ascii=False, indent=2))
@@ -332,7 +335,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     from . import webapp
 
     webapp.serve(args.checkpoint, host=args.host, port=args.port,
-                 label_dir=args.label_dir)
+                 label_dir=args.label_dir, lexicon_file=args.lexicon)
     return 0
 
 
@@ -431,6 +434,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--errors-dir", help="where to write the error examples")
     p.add_argument("--lexicon-decode", action="store_true",
                    help="also score the output corrected with the word list")
+    p.add_argument("--lexicon", help="extra word list for the corrected scoring")
     p.set_defaults(func=cmd_eval)
 
     p = sub.add_parser("demo", help="render text with the font and recognise it")
@@ -456,6 +460,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out-image", help="save an annotated copy of the input")
     p.add_argument("--lexicon-decode", action="store_true",
                    help="correct recognised words with the built-in word list")
+    p.add_argument("--lexicon", help="extra word list (plain text, one word per line)")
     p.set_defaults(func=cmd_recognize)
 
     p = sub.add_parser("baseline", help="compare with Tesseract on the same data")
@@ -471,6 +476,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8009)
     p.add_argument("--label-dir", help="where hand-labelled crops are saved (default data/real)")
+    p.add_argument("--lexicon", help="extra word list used by the 'словарь' switch")
     p.set_defaults(func=cmd_serve)
 
     return parser

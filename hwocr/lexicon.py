@@ -78,6 +78,31 @@ def load_user_lexicon(path: str | Path) -> list[str]:
     return [word for word in text.split() if word]
 
 
+def append_words(path: str | Path, text: str) -> int:
+    """Adds the words of ``text`` to a user word list; returns how many were new.
+
+    Used by the web UI: every hand-labelled line contributes its vocabulary, and
+    the lexicon-based post-processing (word segmentation + correction) then
+    knows the terminology of that particular document.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    known: list[str] = []
+    if path.exists():
+        known = load_user_lexicon(path)
+    seen = {word for word in known}
+    added = 0
+    for word in text.split():
+        clean = word.strip()
+        if clean and clean not in seen:
+            known.append(clean)
+            seen.add(clean)
+            added += 1
+    if added:
+        path.write_text("\n".join(known) + "\n", encoding="utf-8")
+    return added
+
+
 def filter_lexicon(words: Iterable[str], allowed: set[str]) -> list[str]:
     """Keep only words that the given font can actually render."""
     return [w for w in words if w and all(ch in allowed for ch in w)]

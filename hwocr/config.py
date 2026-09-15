@@ -44,6 +44,8 @@ class Config:
     p_digits: float = 0.06        # probability of a numeric token
     p_light_aug: float = 1.0      # probability of applying image augmentations at all
     p_heavy_aug: float = 0.35     # probability of the "photo/camera" pipeline
+    real_repeats_target: int = 200   # virtual size of the hand-labelled set
+    real_augment_prob: float = 0.7   # augmentation for repeated hand-labelled crops
 
     # ---- model ----------------------------------------------------------
     cnn_channels: tuple[int, ...] = (32, 32, 64, 64, 128, 128, 128)

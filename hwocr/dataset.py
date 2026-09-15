@@ -159,6 +159,58 @@ class OnDiskDataset(Dataset):
         }
 
 
+class RealLineDataset(OnDiskDataset):
+    """Hand-labelled crops with augmentation and repetition (fine-tuning).
+
+    A handful of hand-labelled boxes is far too little to fine-tune on, so each
+    label is repeated ``repeats`` times with an independent augmentation:
+    20 labels can thus give a few hundred slightly different samples.
+    ``heavy_prob`` decides how often the photo-like pipeline is used.
+    """
+
+    def __init__(
+        self,
+        root: str | Path,
+        cfg: Config,
+        repeats: int = 1,
+        augment_prob: float = 0.7,
+        heavy_prob: float = 0.0,
+        seed: int = 0,
+    ) -> None:
+        super().__init__(root, cfg)
+        self.repeats = max(1, int(repeats))
+        self.augment_prob = float(augment_prob)
+        self.heavy_prob = float(heavy_prob)
+        self.seed = int(seed)
+
+    def __len__(self) -> int:
+        return len(self.entries) * self.repeats
+
+    def length_key(self, index: int) -> int:
+        # the index space is expanded by `repeats`, the key only depends on the base entry
+        return super().length_key(index % len(self.entries))
+
+    def __getitem__(self, index: int) -> dict:
+        base = index % len(self.entries)
+        variant = index // len(self.entries)
+        path, visual, logical = self.entries[base]
+        image = np.asarray(Image.open(path).convert("L"), dtype=np.uint8)
+        if variant > 0 and self.augment_prob > 0:
+            rng = random.Random(self.seed * 1_000_003 + base * 1009 + variant)
+            if rng.random() < self.augment_prob:
+                image = augment.apply_augment(image, rng,
+                                              heavy=rng.random() < self.heavy_prob)
+        arr, valid_w = augment.to_model_input(image, self.cfg.img_height, self.cfg.max_width)
+        return {
+            "image": torch.from_numpy(arr),
+            "label": torch.tensor(charset.encode(visual), dtype=torch.long),
+            "valid_width": int(valid_w),
+            "font": "real",
+            "logical_text": logical,
+            "path": str(path),
+        }
+
+
 def collate(batch: list[dict], width_reduction: int = 8) -> dict:
     """Pad images/labels of a batch; keeps per-sample CTC lengths."""
     max_w = max(item["image"].shape[-1] for item in batch)

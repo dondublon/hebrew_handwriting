@@ -672,8 +672,10 @@ class Handler(BaseHTTPRequestHandler):
 
     recognizer: ocr.Recognizer | None = None
     lexicon_recognizer: ocr.Recognizer | None = None
+    lexicon_state: tuple | None = None
     checkpoint: str | None = None
     label_dir: Path | None = None
+    lexicon_file: Path | None = None
     lock = threading.Lock()
     server_version = "hwocr/0.1"
 
@@ -689,14 +691,36 @@ class Handler(BaseHTTPRequestHandler):
             return 0
         return sum(1 for line in labels.read_text(encoding="utf-8").splitlines() if line.strip())
 
+    def _vocabulary(self) -> list[str]:
+        """Default word list plus the document vocabulary learned from labels."""
+        from .lexicon import default_lexicon, load_user_lexicon
+
+        words = list(default_lexicon())
+        sources = []
+        if self.lexicon_file:
+            sources.append(Path(self.lexicon_file))
+        sources.append(self._labels_dir() / "words.txt")
+        for source in sources:
+            if source.exists():
+                words.extend(load_user_lexicon(source))
+        return words
+
     def _picker(self, lexicon: bool) -> "ocr.Recognizer":
         """Recogniser with or without lexicon correction (cached)."""
         if not lexicon:
             return self.recognizer
-        if self.lexicon_recognizer is None:
+        # rebuild when the vocabulary changes (labels keep adding words)
+        stamps = []
+        for source in ((Path(self.lexicon_file) if self.lexicon_file else None),
+                       self._labels_dir() / "words.txt"):
+            stamps.append(source.stat().st_mtime if source and source.exists() else None)
+        state = tuple(stamps)
+        if self.lexicon_recognizer is None or state != self.lexicon_state:
             self.lexicon_recognizer = ocr.Recognizer.load(
-                self.checkpoint or DEFAULT_CHECKPOINT, lexicon_decode=True
+                self.checkpoint or DEFAULT_CHECKPOINT, lexicon_decode=True,
+                lexicon_words=self._vocabulary(),
             )
+            self.lexicon_state = state
         return self.lexicon_recognizer
 
     # -- helpers ---------------------------------------------------------
@@ -827,8 +851,13 @@ class Handler(BaseHTTPRequestHandler):
         Image.fromarray(image[y0:y1, x0:x1]).save(directory / name)
         with (directory / "labels.tsv").open("a", encoding="utf-8") as handle:
             handle.write(f"{name}\t{bidi.logical_to_visual(text)}\t{text}\n")
+        # the vocabulary of the document accumulates here and is used by the
+        # lexicon post-processing (word segmentation + correction)
+        from .lexicon import append_words
+
+        new_words = append_words(directory / "words.txt", text)
         self._send_json({"saved": name, "count": count + 1, "text": text,
-                         "dir": str(directory)})
+                         "dir": str(directory), "new_words": new_words})
 
     def _recognize(self, body: bytes, segment: bool = True) -> None:
         if not body:
@@ -885,16 +914,21 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(checkpoint: str | Path = DEFAULT_CHECKPOINT, host: str = "127.0.0.1",
-          port: int = 8009, label_dir: str | Path | None = None) -> None:
+          port: int = 8009, label_dir: str | Path | None = None,
+          lexicon_file: str | Path | None = None) -> None:
     """Load the checkpoint and serve the UI until interrupted.
 
     ``label_dir`` is where hand-labelled crops are written (``data/real`` by
-    default); the training command picks them up via ``--real-dir``.
+    default); the training command picks them up via ``--real-dir``.  The words
+    of every hand-labelled line are appended to ``<label_dir>/words.txt`` and
+    used by the lexicon post-processing (word segmentation + correction);
+    ``lexicon_file`` adds an extra word list.
     """
     checkpoint = str(checkpoint)
     Handler.recognizer = ocr.Recognizer.load(checkpoint)
     Handler.checkpoint = checkpoint
     Handler.label_dir = Path(label_dir) if label_dir else None
+    Handler.lexicon_file = Path(lexicon_file) if lexicon_file else None
     resolved_labels = Handler.label_dir or (PROJECT_ROOT / "data" / "real")
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"[web] hwocr UI on http://{host}:{port}  (checkpoint: {checkpoint})")

@@ -27,12 +27,15 @@ class WordCorrector:
     PREFIXES = "הובלמכש"  # one-letter prefixes of Hebrew words
 
     def __init__(self, words: Iterable[str], max_relative_distance: float = 0.34,
-                 max_absolute_distance: int = 3, min_length: int = 3) -> None:
+                 max_absolute_distance: int = 3, min_length: int = 3,
+                 segment: bool = True, min_part: int = 2) -> None:
         self.words = sorted({w for w in words if w})
         self.lexicon = set(self.words)
         self.max_relative_distance = float(max_relative_distance)
         self.max_absolute_distance = int(max_absolute_distance)
         self.min_length = int(min_length)
+        self.segment = bool(segment)
+        self.min_part = int(min_part)
         self._by_length: dict[int, list[str]] = defaultdict(list)
         for word in self.words:
             self._by_length[len(word)].append(word)
@@ -49,25 +52,12 @@ class WordCorrector:
         # "correct" away a prefix of a word that is in the list ('החתול').
         if word[0] in self.PREFIXES and len(word) > 3 and word[1:] in self.lexicon:
             return word
-        limit = self.threshold(word)
-        best = word
-        best_key: tuple[int, int] | None = None
-        for length in range(max(1, len(word) - limit), len(word) + limit + 1):
-            for candidate in self._by_length.get(length, ()):
-                distance = edit_distance(word, candidate)
-                if distance > limit:
-                    continue
-                # prefer the closest match, then the one that keeps the length
-                # (most mistakes are single characters, not dropped letters)
-                key = (distance, abs(length - len(word)))
-                if best_key is None or key < best_key:
-                    best, best_key = candidate, key
-                    if key == (1, 0):
-                        return best
-        return best
+        return self._matches(word) or word
 
     def correct_text(self, text: str) -> str:
-        """Correct word by word, keeping the original separators."""
+        """Full post-processing: word segmentation, then per-word correction."""
+        if self.segment:
+            text = self.segment_text(text)
         out: list[str] = []
         word: list[str] = []
 
@@ -84,6 +74,109 @@ class WordCorrector:
                 word.append(ch)
         flush()
         return "".join(out)
+
+    # ------------------------------------------------------------------
+    def _matches(self, word: str) -> str | None:
+        """Closest lexicon word within the correction threshold (``None`` if none)."""
+        if not word:
+            return None
+        if word in self.lexicon:
+            return word
+        if len(word) < self.min_length:
+            return None
+        limit = self.threshold(word)
+        best: str | None = None
+        best_key: tuple[int, int] | None = None
+        for length in range(max(1, len(word) - limit), len(word) + limit + 1):
+            for candidate in self._by_length.get(length, ()):
+                distance = edit_distance(word, candidate)
+                if distance > limit:
+                    continue
+                # не «съедаем» буквы: замены допустимы, а вот пропуск/вставка
+                # больше одной буквы — уже другая информация, такое отвергаем
+                if distance > 1 and length != len(word):
+                    continue
+                key = (distance, abs(length - len(word)))
+                if best_key is None or key < best_key:
+                    best, best_key = candidate, key
+                    if key == (1, 0):
+                        return best
+        return best
+
+    def _parts(self, word: str) -> list[list[str]]:
+        """All ways to split ``word`` into lexicon words (prefix + 1..3 parts).
+
+        Parts may be one edit away from a lexicon word (``התחשות`` ~
+        ``התרחשות``): the per-word correction fixes them afterwards, which is
+        what makes splitting work on noisy recognition output.
+        """
+        options: list[list[str]] = []
+        # приставка + слово: האנגיה -> ה + אנגיה
+        if len(word) > 2 and word[0] in self.PREFIXES and self._matches(word[1:]):
+            options.append([word[0], word[1:]])
+        length = len(word)
+        for i in range(self.min_part, length - self.min_part + 1):
+            first, rest = word[:i], word[i:]
+            if self._matches(first) and self._matches(rest):
+                options.append([first, rest])
+            elif not self._matches(rest):
+                for j in range(1, len(rest) - self.min_part + 1):
+                    middle, last = rest[:j], rest[j:]
+                    if self._matches(first) and self._matches(middle) and self._matches(last):
+                        options.append([first, middle, last])
+        # предпочитаем: все части точно в словаре -> меньше частей ->
+        # самый длинный последний фрагмент (в иврите приставки ה/ו/ב/ל/מ/כ/ש
+        # принадлежат следующему слову: «סוגי | האנגיה» лучше, чем «סוגיה | אנגיה»)
+        # -> более ровное деление
+        options.sort(key=lambda parts: (
+            sum(1 for part in parts if part not in self.lexicon),
+            len(parts), -len(parts[-1]), max(len(p) for p in parts)))
+        return options
+
+    def segment_text(self, text: str) -> str:
+        """Split words that are glued together and merge words split by mistake.
+
+        Only tokens that are *not* in the word list are touched, so already
+        correct text is left alone.  This is what fixes a missing space when two
+        written words touch each other (no ink gap for the recogniser to see).
+        """
+        words = text.split(" ")
+        changed = True
+        rounds = 0
+        while changed and rounds < 3:
+            changed = False
+            rounds += 1
+            merged: list[str] = []
+            i = 0
+            while i < len(words):
+                if i + 1 < len(words) and words[i] and words[i + 1]:
+                    candidate = words[i] + words[i + 1]
+                    if (words[i] not in self.lexicon and words[i + 1] not in self.lexicon
+                            and candidate in self.lexicon):
+                        merged.append(candidate)
+                        i += 2
+                        changed = True
+                        continue
+                merged.append(words[i])
+                i += 1
+            words = merged
+
+            split_words: list[str] = []
+            for word in words:
+                if len(word) >= 2 * self.min_part and not self._matches(word):
+                    options = self._parts(word)
+                    if options:
+                        # сами части корректируются дальше, по словам
+                        best = options[0]
+                        if len(best) > 1:
+                            split_words.extend(
+                                self._matches(part) or part for part in best)
+                            changed = True
+                            continue
+                split_words.append(word)
+            words = split_words
+        return " ".join(words)
+
 
 
 def correct_words_in_report(pairs: Sequence[tuple[str, str]], corrector: WordCorrector,
