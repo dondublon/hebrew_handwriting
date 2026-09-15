@@ -122,7 +122,8 @@ def render_line(
     letter by its side bearing, which for this italic font is up to 13 px -
     the letters then drift apart or collide at random.)
     """
-    style = style or RenderStyle()
+    style = style or RenderStyle(p_natural_spacing=cfg.p_natural_spacing,
+                                 min_gap=cfg.min_letter_gap)
     font = fonts.load_pil_font(spec.path, cfg.font_size)
     ascent, descent = font.getmetrics()
     kerning = fonts.kerning_pairs(str(spec.path))

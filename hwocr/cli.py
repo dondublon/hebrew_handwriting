@@ -155,7 +155,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
             extra_roots["other"] = paths
 
     result = generate.generate_all(cfg, specs, words=words, sizes=sizes,
-                                   root=args.out, extra_font_roots=extra_roots)
+                                   root=args.out, extra_font_roots=extra_roots,
+                                   pango_size=args.pango, pango_size_px=args.pango_size)
     for name, path in result.items():
         print(f"[cli] {name:20s} -> {path}")
     print(f"[cli] hint: validation seed is {ds.VAL_SEED}, test seed {ds.TEST_SEED}")
@@ -359,6 +360,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--test-camera", type=int, default=500)
     p.add_argument("--extra-font-test-dir", action="append", metavar="DIR",
                    help="directory with additional fonts for a zero-shot font test")
+    p.add_argument("--pango", type=int, default=0,
+                   help="also export a Pango/HarfBuzz-rendered test split of this size")
+    p.add_argument("--pango-size", type=int, default=44, help="font size for the Pango split")
     p.set_defaults(func=cmd_generate)
 
     p = sub.add_parser("train", help="train the CRNN")

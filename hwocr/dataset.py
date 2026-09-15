@@ -60,6 +60,7 @@ class SyntheticLineDataset(Dataset):
         )
         # Overridable per training stage (length curriculum).
         self.max_words = cfg.max_words
+        self.max_word_len = cfg.max_word_len
 
         base_words = list(words) if words else lexicon.default_lexicon()
         self.prepared: list[tuple[fonts.FontSpec, set[str], list[str]]] = []
@@ -74,7 +75,9 @@ class SyntheticLineDataset(Dataset):
         """Returns (logical text, visual text, font)."""
         idx = int(rng.choices(range(len(self.prepared)), weights=self.weights, k=1)[0])
         spec, allowed, words = self.prepared[idx]
-        text = lexicon.sample_text(rng, self.cfg, allowed, words, max_words=self.max_words)
+        text = lexicon.sample_text(rng, self.cfg, allowed, words,
+                                   max_words=self.max_words,
+                                   max_word_len=self.max_word_len)
         return text, bidi.logical_to_visual(text), spec
 
     def length_key(self, index: int) -> int:

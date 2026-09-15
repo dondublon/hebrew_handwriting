@@ -59,7 +59,7 @@ def evaluate(model: nn.Module, cfg: Config, loader, device: torch.device) -> met
 
 
 def _lr_at(step: int, cfg: Config) -> float:
-    total = max(1, cfg.steps_plain + cfg.steps_light + cfg.steps_heavy)
+    total = max(1, cfg.steps_short + cfg.steps_medium + cfg.steps_light + cfg.steps_heavy)
     if step < cfg.warmup_steps:
         return cfg.lr * (step + 1) / max(1, cfg.warmup_steps)
     progress = (step - cfg.warmup_steps) / max(1, total - cfg.warmup_steps)
@@ -117,16 +117,19 @@ def train(
     step = 0
     start = time.time()
     seen_images = 0
-    total_steps = cfg.steps_plain + cfg.steps_light + cfg.steps_heavy
-    # (name, steps, heavy_prob, augment_prob, max_words)
+    total_steps = cfg.steps_short + cfg.steps_medium + cfg.steps_light + cfg.steps_heavy
+    # (name, steps, heavy_prob, augment_prob, max_words, max_word_len)
     stages = [
-        ("plain", cfg.steps_plain, 0.0, 0.0, cfg.steps_plain_max_words),
-        ("light", cfg.steps_light, 0.0, 1.0, cfg.max_words),
-        ("heavy", cfg.steps_heavy, cfg.p_heavy_aug, 1.0, cfg.max_words),
+        ("short", cfg.steps_short, 0.0, 0.0,
+         cfg.steps_short_max_words, cfg.steps_short_max_word_len),
+        ("medium", cfg.steps_medium, 0.0, 0.0,
+         cfg.steps_medium_max_words, cfg.steps_medium_max_word_len),
+        ("light", cfg.steps_light, 0.0, 1.0, cfg.max_words, cfg.max_word_len),
+        ("heavy", cfg.steps_heavy, cfg.p_heavy_aug, 1.0, cfg.max_words, cfg.max_word_len),
     ]
 
     try:
-        for stage_name, stage_steps, heavy_prob, augment_prob, max_words in stages:
+        for stage_name, stage_steps, heavy_prob, augment_prob, max_words, max_word_len in stages:
             if stage_steps <= 0:
                 continue
             # Workers are forked when the iterator is created, so a fresh
@@ -134,12 +137,13 @@ def train(
             train_set.heavy_prob = heavy_prob
             train_set.augment_prob = augment_prob
             train_set.max_words = max_words
+            train_set.max_word_len = max_word_len
             loader = ds.make_loader(train_set, cfg, shuffle=True)
             iterator = iter(loader)
             if not quiet:
                 print(f"[train] stage '{stage_name}': {stage_steps} steps, "
                       f"p(aug)={augment_prob}, p(heavy)={heavy_prob}, "
-                      f"max words={max_words}", flush=True)
+                      f"max words={max_words}, max word length={max_word_len}", flush=True)
 
             for _ in range(stage_steps):
                 batch = next(iterator)

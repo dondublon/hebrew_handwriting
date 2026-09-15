@@ -122,12 +122,16 @@ def sample_word(
     cfg: Config,
     allowed: set[str],
     lexicon: Sequence[str],
+    max_word_len: int | None = None,
 ) -> str:
+    limit = cfg.max_word_len if max_word_len is None else max(2, int(max_word_len))
     if rng.random() < cfg.p_digits:
         return sample_number(rng, allowed)
     if lexicon and rng.random() < cfg.p_real_word:
-        return rng.choice(lexicon)
-    return sample_pseudo_word(rng, allowed, cfg.min_word_len, cfg.max_word_len)
+        candidates = [w for w in lexicon if len(w) <= limit] if limit < cfg.max_word_len else lexicon
+        if candidates:
+            return rng.choice(candidates)
+    return sample_pseudo_word(rng, allowed, cfg.min_word_len, limit)
 
 
 def sample_text(
@@ -137,17 +141,19 @@ def sample_text(
     lexicon: Sequence[str],
     max_len: int | None = None,
     max_words: int | None = None,
+    max_word_len: int | None = None,
 ) -> str:
     """Sample a *logical* (typing order) text fragment of at most ``max_len`` chars.
 
-    ``max_words`` overrides ``cfg.max_words``; the training loop uses it for a
-    length curriculum (short texts first - CTC converges much faster on them).
+    ``max_words``/``max_word_len`` override the config values; the training loop
+    uses them for a length curriculum, because a CTC model fits short sequences
+    much faster than long ones.
     """
     max_len = max_len or cfg.max_label_len
     upper = cfg.max_words if max_words is None else max(1, int(max_words))
     words: list[str] = []
     for _ in range(rng.randint(cfg.min_words, upper)):
-        word = sample_word(rng, cfg, allowed, lexicon)
+        word = sample_word(rng, cfg, allowed, lexicon, max_word_len=max_word_len)
         if not word:
             continue
         candidate = " ".join(words + [word])
