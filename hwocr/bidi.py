@@ -1,4 +1,4 @@
- """Minimal bidirectional text handling.
+"""Minimal bidirectional text handling.
 
 The Pillow build that is available in this project has no ``libraqm``, so
 ``ImageDraw.text(..., direction="rtl")`` is not supported and Hebrew strings

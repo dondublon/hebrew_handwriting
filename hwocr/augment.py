@@ -23,6 +23,15 @@ WHITE = 255
 """Background value used everywhere in the pipeline (ink is dark)."""
 
 
+def _np_rng(rng: random.Random) -> np.random.Generator:
+    """Deterministic numpy generator derived from a ``random.Random``.
+
+    Keeps every sample reproducible from its seed while allowing fast array
+    randomness (noise, elastic fields).
+    """
+    return np.random.default_rng(rng.getrandbits(32))
+
+
 def ensure_gray(img: np.ndarray) -> np.ndarray:
     """Convert any input image to uint8 grayscale with dark ink on light paper."""
     if img.ndim == 3:
@@ -87,8 +96,9 @@ def random_perspective(img: np.ndarray, rng: random.Random, mag: float = 0.035) 
 def elastic(img: np.ndarray, rng: random.Random, alpha: float = 2.5, sigma: float = 6.0) -> np.ndarray:
     """Smooth random displacement - mimics the unevenness of a hand written line."""
     h, w = img.shape
-    dx = cv2.GaussianBlur((rng.rand(h, w) * 2 - 1).astype(np.float32), (0, 0), sigma) * alpha
-    dy = cv2.GaussianBlur((rng.rand(h, w) * 2 - 1).astype(np.float32), (0, 0), sigma) * alpha
+    gen = _np_rng(rng)
+    dx = cv2.GaussianBlur((gen.random((h, w)) * 2 - 1).astype(np.float32), (0, 0), sigma) * alpha
+    dy = cv2.GaussianBlur((gen.random((h, w)) * 2 - 1).astype(np.float32), (0, 0), sigma) * alpha
     grid_x, grid_y = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
     return cv2.remap(img, grid_x + dx, grid_y + dy, cv2.INTER_LINEAR,
                      borderMode=_warp_border(), borderValue=WHITE)
@@ -128,19 +138,18 @@ def random_blur(img: np.ndarray, rng: random.Random) -> np.ndarray:
 
 def random_noise(img: np.ndarray, rng: random.Random) -> np.ndarray:
     out = img.astype(np.float32)
+    gen = _np_rng(rng)
+    shape = img.shape
     if rng.random() < 0.7:  # gaussian sensor noise
-        out += rng.gauss(0, rng.uniform(1.5, 12.0)) * np.ones_like(out)
-        out += np.array([[rng.gauss(0, rng.uniform(2.0, 14.0))]], dtype=np.float32) * (
-            rng.rand(*img.shape).astype(np.float32) - 0.5
-        ) * 2
+        out += gen.normal(0.0, rng.uniform(1.5, 12.0), shape).astype(np.float32)
     if rng.random() < 0.35:  # salt & pepper
         amount = rng.uniform(0.0005, 0.01)
-        mask = rng.rand(*img.shape)
+        mask = gen.random(shape)
         out[mask < amount / 2] = 0.0
         out[mask > 1 - amount / 2] = 255.0
     if rng.random() < 0.25:  # speckle / dust
         amount = rng.uniform(0.0002, 0.002)
-        out[rng.rand(*img.shape) < amount] = rng.uniform(0, 90)
+        out[gen.random(shape) < amount] = rng.uniform(0, 90)
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
@@ -148,9 +157,11 @@ def uneven_illumination(img: np.ndarray, rng: random.Random) -> np.ndarray:
     """Gradients, vignetting and shadow cast onto the page."""
     h, w = img.shape
     out = img.astype(np.float32)
-    ramp = np.linspace(rng.uniform(0.75, 1.0), rng.uniform(0.75, 1.05), w, dtype=np.float32)
-    axis = rng.randint(0, 1)
-    gain = ramp[None, :] if axis == 1 else ramp[:, None]
+    low, high = rng.uniform(0.75, 1.0), rng.uniform(0.75, 1.05)
+    if rng.random() < 0.5:  # horizontal ramp
+        gain = np.linspace(low, high, w, dtype=np.float32)[None, :]
+    else:                   # vertical ramp
+        gain = np.linspace(low, high, h, dtype=np.float32)[:, None]
     out *= gain
     if rng.random() < 0.5:  # vignette
         yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
@@ -180,7 +191,8 @@ def paper_texture(img: np.ndarray, rng: random.Random) -> np.ndarray:
     """Faint paper grain, dust and a couple of fold lines."""
     h, w = img.shape
     out = img.astype(np.float32)
-    grain = cv2.GaussianBlur((rng.rand(h, w) * 255).astype(np.float32), (0, 0), rng.uniform(1.5, 5.0))
+    grain = cv2.GaussianBlur((_np_rng(rng).random((h, w)) * 255).astype(np.float32),
+                             (0, 0), rng.uniform(1.5, 5.0))
     out = out * (1.0 - rng.uniform(0.03, 0.12)) + grain * rng.uniform(0.03, 0.12)
     for _ in range(rng.randint(0, 2)):  # pencil-thin scratches / folds
         x1, x2 = rng.randint(0, w), rng.randint(0, w)
