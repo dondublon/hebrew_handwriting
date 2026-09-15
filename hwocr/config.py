@@ -52,10 +52,16 @@ class Config:
     # ---- training -------------------------------------------------------
     seed: int = 1234
     batch_size: int = 32
-    lr: float = 3e-4
-    min_lr: float = 3e-5
-    steps_light: int = 600        # stage 1: mild augmentations
-    steps_heavy: int = 300        # stage 2: photo-like augmentations
+    lr: float = 1e-3
+    min_lr: float = 1e-4
+    # Three stages: clean renderings first (the model learns the letter shapes
+    # fastest there), then mild augmentations, then photo-like ones.  The first
+    # stage also uses short texts only - a CTC model fits short sequences much
+    # faster, which is a standard curriculum trick.
+    steps_plain: int = 250
+    steps_light: int = 400        # stage 2: mild augmentations
+    steps_heavy: int = 300        # stage 3: photo-like augmentations
+    steps_plain_max_words: int = 2  # length curriculum for the first stage
     warmup_steps: int = 50
     val_every: int = 100
     val_samples: int = 200

@@ -136,11 +136,17 @@ def sample_text(
     allowed: set[str],
     lexicon: Sequence[str],
     max_len: int | None = None,
+    max_words: int | None = None,
 ) -> str:
-    """Sample a *logical* (typing order) text fragment of at most ``max_len`` chars."""
+    """Sample a *logical* (typing order) text fragment of at most ``max_len`` chars.
+
+    ``max_words`` overrides ``cfg.max_words``; the training loop uses it for a
+    length curriculum (short texts first - CTC converges much faster on them).
+    """
     max_len = max_len or cfg.max_label_len
+    upper = cfg.max_words if max_words is None else max(1, int(max_words))
     words: list[str] = []
-    for _ in range(rng.randint(cfg.min_words, cfg.max_words)):
+    for _ in range(rng.randint(cfg.min_words, upper)):
         word = sample_word(rng, cfg, allowed, lexicon)
         if not word:
             continue

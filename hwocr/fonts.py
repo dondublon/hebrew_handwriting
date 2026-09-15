@@ -155,6 +155,80 @@ def resolve_fonts(
     return unique
 
 
+def _x_advance(value) -> float:
+    """XAdvance of a GPOS ValueRecord (0 when absent)."""
+    if value is None:
+        return 0.0
+    advance = getattr(value, "XAdvance", None)
+    return float(advance) if advance else 0.0
+
+
+@lru_cache(maxsize=64)
+def kerning_pairs(path: str) -> dict[tuple[str, str], float]:
+    """Character pair kerning (in font units) taken from the font's GPOS table.
+
+    The Pillow build used here has no HarfBuzz, so without this the synthetic
+    renderings would ignore the font's kerning (up to ±140 units for this
+    font), while a real word processor *does* apply it - i.e. the training data
+    would not match the images the model is meant to read.
+    """
+    try:
+        font = TTFont(path, lazy=True)
+        gpos = font["GPOS"].table
+    except Exception:  # pragma: no cover - font without GPOS
+        return {}
+
+    cmap = font.getBestCmap()
+    glyph_to_char: dict[str, str] = {}
+    for codepoint, glyph_name in cmap.items():
+        glyph_to_char.setdefault(glyph_name, chr(codepoint))
+
+    pairs: dict[tuple[str, str], float] = {}
+
+    def add(first_glyph: str, second_glyph: str, value: float) -> None:
+        first, second = glyph_to_char.get(first_glyph), glyph_to_char.get(second_glyph)
+        if first and second and value:
+            pairs[(first, second)] = value
+
+    for lookup in getattr(gpos.LookupList, "Lookup", []):
+        for subtable in lookup.SubTable:
+            subtable = getattr(subtable, "ExtSubTable", subtable)
+            if hasattr(subtable, "PairSet") and subtable.Coverage is not None:
+                for index, first_glyph in enumerate(subtable.Coverage.glyphs):
+                    for record in subtable.PairSet[index].PairValueRecord:
+                        add(first_glyph, record.SecondGlyph, _x_advance(record.Value1))
+            elif hasattr(subtable, "Class1Record") and subtable.ClassDef1 is not None:
+                first_class = _glyphs_by_class(subtable.ClassDef1, glyph_to_char)
+                second_class = _glyphs_by_class(subtable.ClassDef2, glyph_to_char)
+                for index_1, record_1 in enumerate(subtable.Class1Record):
+                    first_glyphs = first_class.get(index_1, [])
+                    if not first_glyphs:
+                        continue
+                    for index_2, record_2 in enumerate(record_1.Class2Record):
+                        value = _x_advance(record_2.Value1)
+                        if not value:
+                            continue
+                        for first_glyph in first_glyphs:
+                            for second_glyph in second_class.get(index_2, []):
+                                add(first_glyph, second_glyph, value)
+    return pairs
+
+
+def _glyphs_by_class(class_def, known_glyphs: dict[str, str]) -> dict[int, list[str]]:
+    """Expand a GPOS ClassDef into {class index: [glyph names]}.
+
+    Glyphs that are not mentioned in ``classDefs`` belong to class 0, which is
+    why the known glyphs are added explicitly.
+    """
+    mapping: dict[int, list[str]] = {}
+    for glyph, klass in class_def.classDefs.items():
+        mapping.setdefault(int(klass), []).append(glyph)
+    unassigned = [g for g in known_glyphs if g not in class_def.classDefs]
+    if unassigned:
+        mapping.setdefault(0, []).extend(unassigned)
+    return mapping
+
+
 def sampling_weights(specs: Sequence[FontSpec], weights: dict[str, float]) -> np.ndarray:
     """Normalised sampling probabilities for a list of fonts."""
     raw = np.array([float(weights.get(spec.name, 1.0)) for spec in specs], dtype=np.float64)

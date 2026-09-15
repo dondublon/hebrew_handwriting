@@ -19,7 +19,7 @@ from functools import lru_cache
 from typing import Sequence
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 from . import bidi, charset, fonts
 from .config import Config
@@ -37,10 +37,15 @@ class RenderStyle:
     max_scale: float = 0.10      # relative letter size jitter
     max_dy: float = 2.0          # px, per letter (at render resolution)
     max_dx: float = 1.2          # px, per letter
-    spacing_jitter: float = 0.18  # relative inter-letter spacing jitter
     word_spacing_extra: float = 0.9
     baseline_drift: float = 0.6  # random walk step of the baseline
     baseline_limit: float = 3.5  # px
+    side_margin: int = 12        # white margin around the line, px
+    # Both extremes of the font's own spacing are useful training data: the
+    # connected look is authentic, the separated one is unambiguous.
+    p_natural_spacing: float = 0.5   # keep the font's (possibly touching) spacing
+    min_gap: float = 1.5             # px, enforced when letters are pushed apart
+
 
 
 def _char_tile(font, ch: str, ink: int) -> tuple[Image.Image, int]:
@@ -107,32 +112,61 @@ def render_line(
     cfg: Config,
     style: RenderStyle | None = None,
 ) -> np.ndarray:
-    """Render a single line of text; returns a uint8 grayscale image (ink dark)."""
+    """Render a single line of text; returns a uint8 grayscale image (ink dark).
+
+    Layout is done in *font units* using the font's own advances and its GPOS
+    kerning - i.e. the way a real word processor would set this text.  Every
+    glyph is rendered into its own tile and then placed by the **centre of its
+    ink**, which keeps the placement correct even though the tiles are randomly
+    rotated and scaled.  (Placing tiles by a pen cursor instead shifts each
+    letter by its side bearing, which for this italic font is up to 13 px -
+    the letters then drift apart or collide at random.)
+    """
     style = style or RenderStyle()
     font = fonts.load_pil_font(spec.path, cfg.font_size)
     ascent, descent = font.getmetrics()
+    kerning = fonts.kerning_pairs(str(spec.path))
 
     body = font_body_height(str(spec.path), cfg.font_size)
     # Per-line size jitter keeps the samples varied while the calibration
     # itself stays font specific.
     norm = cfg.target_body / body if body > 0 else 1.0
     norm *= 1.0 + rng.uniform(-cfg.line_scale_jitter, cfg.line_scale_jitter)
+    if norm <= 0:
+        norm = 1.0
 
-    margin = 12
-    canvas = Image.new(
-        "L",
-        (max(16, int(font.getlength(text_visual)) + 4 * margin), ascent + descent + 2 * margin),
-        255,
-    )
-    y0 = margin
-
-    cursor = float(margin)
-    drift = 0.0
+    # ---- layout pass: pen positions in font units ----------------------
+    glyphs: list[tuple[str, float, float]] = []      # (char, ink centre x/y)
+    pen = style.side_margin / norm
+    previous_ink_right: float | None = None
+    previous_char: str | None = None
     for ch in text_visual:
         if ch == " ":
-            cursor += font.getlength(ch) * rng.uniform(0.8, 1.6) * style.word_spacing_extra
+            pen += font.getlength(ch) * rng.uniform(0.8, 1.6) * style.word_spacing_extra
+            previous_ink_right = None
+            previous_char = None
             continue
+        x0, y0, x1, y1 = font.getbbox(ch)
+        if previous_char is not None:
+            pen += kerning.get((previous_char, ch), 0.0)
+        # The font is a connected (cursive) style: with its natural advances
+        # neighbouring letters can touch or overlap, which is authentic but
+        # often ambiguous.  A part of the letters is therefore pushed apart.
+        if previous_ink_right is not None and rng.random() > style.p_natural_spacing:
+            pen = max(pen, previous_ink_right + style.min_gap / norm - x0)
+        glyphs.append((ch, pen + (x0 + x1) / 2.0, (y0 + y1) / 2.0 - ascent))
+        previous_ink_right = pen + x1
+        previous_char = ch
+        pen += font.getlength(ch)
 
+    # ---- paint ---------------------------------------------------------
+    width = int(round(pen * norm)) + 2 * style.side_margin
+    height = int(round((ascent + descent) * norm)) + 2 * style.side_margin
+    canvas = Image.new("L", (max(16, width), max(12, height)), 255)
+    baseline = style.side_margin + ascent * norm
+
+    drift = 0.0
+    for ch, centre_x, centre_y in glyphs:
         ink = rng.randint(style.ink_dark, style.ink_light)
         tile, _ = _char_tile(font, ch, ink)
         drift = float(np.clip(drift + rng.uniform(-style.baseline_drift, style.baseline_drift),
@@ -140,17 +174,21 @@ def render_line(
         scale = norm * (1.0 + rng.uniform(-style.max_scale, style.max_scale))
         stretch = 1.0 + rng.uniform(-0.08, 0.12)
         tile = _transform_tile(tile, rng, style, scale, stretch)
-
+        ink_box = ImageOps.invert(tile).getbbox()
+        if ink_box is None:
+            continue
         dx = rng.uniform(-style.max_dx, style.max_dx)
         dy = rng.uniform(-style.max_dy, style.max_dy) + drift
-        x = int(round(cursor + dx))
-        canvas.paste(ink, (x, int(round(y0 + dy))), Image.fromarray(255 - np.asarray(tile)))
-
-        advance = font.getlength(ch) * (1.0 + rng.uniform(-style.spacing_jitter,
-                                                          style.spacing_jitter))
-        cursor += advance * norm + dx
+        target_x = centre_x * norm + dx
+        target_y = baseline + centre_y * norm + dy
+        position = (
+            int(round(target_x - (ink_box[0] + ink_box[2]) / 2.0)),
+            int(round(target_y - (ink_box[1] + ink_box[3]) / 2.0)),
+        )
+        canvas.paste(ink, position, Image.fromarray(255 - np.asarray(tile)))
 
     return np.asarray(canvas, dtype=np.uint8)
+
 
 
 def render_text(
