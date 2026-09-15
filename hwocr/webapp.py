@@ -21,7 +21,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 from . import augment, charset, dataset as ds, fonts, metrics, ocr, render
 from .config import DEFAULT_CHECKPOINT
@@ -249,9 +249,14 @@ class Handler(BaseHTTPRequestHandler):
         if not body:
             self._send_json({"error": "empty request body"}, code=400)
             return
-        array = np.frombuffer(body, dtype=np.uint8)
-        image = cv2.imdecode(array, cv2.IMREAD_GRAYSCALE)
-        if image is None:
+        try:
+            # PIL (not cv2) so that the EXIF orientation of phone photos is applied
+            with Image.open(io.BytesIO(body)) as handle:
+                image = np.asarray(ImageOps.exif_transpose(handle).convert("L"),
+                                   dtype=np.uint8)
+        except Exception:
+            image = None
+        if image is None or image.size == 0:
             self._send_json({"error": "unsupported image format"}, code=400)
             return
         with self.lock:  # one inference at a time: the machine has no GPU

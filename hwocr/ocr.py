@@ -9,7 +9,7 @@ from typing import Sequence
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageOps
 
 from . import augment, bidi, decode, detect, model as model_mod
 from .config import DEFAULT_CHECKPOINT, Config
@@ -125,9 +125,15 @@ class Recognizer:
 
     # ------------------------------------------------------------------
     def recognize_page(self, image: np.ndarray | str | Path, segment: bool = True) -> PageResult:
-        """Recognise a full page (line detection + recognition)."""
+        """Recognise a full page (line detection + recognition).
+
+        ``image`` may be a file path (PNG/JPEG/..., EXIF orientation is applied,
+        colour images are converted to grayscale) or a numpy array.
+        """
         if isinstance(image, (str, Path)):
-            image = np.asarray(Image.open(image).convert("L"), dtype=np.uint8)
+            with Image.open(image) as handle:
+                handle = ImageOps.exif_transpose(handle)
+                image = np.asarray(handle.convert("L"), dtype=np.uint8)
         gray = augment.ensure_gray(image)
         if not segment:
             crops = [gray]

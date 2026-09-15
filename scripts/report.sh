@@ -7,6 +7,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 PY=${PY:-python3}
+
+# Keep every temporary file inside the project (see tmp/); `tempfile` honours TMPDIR.
+export TMPDIR="${TMPDIR:-$PWD/tmp}"
+mkdir -p "$TMPDIR"
+
 CHECKPOINT=${CHECKPOINT:-models/crnn_gveret.pt}
 LIMIT=${LIMIT:-60}
 
