@@ -37,9 +37,16 @@ class EvalResult:
     name: str
     report: metrics.Report = field(default_factory=metrics.Report)
     errors: list[ErrorExample] = field(default_factory=list)
+    pairs: list[tuple[str, str]] = field(default_factory=list)
+    lexicon_report: metrics.Report | None = None
 
     def line(self) -> str:
         return f"{self.name:22s} {self.report.summary()}"
+
+    def lexicon_line(self) -> str:
+        if self.lexicon_report is None:
+            return f"{self.name:22s} (lexicon decoding not evaluated)"
+        return f"{self.name:22s} {self.lexicon_report.summary()}  [lexicon-corrected]"
 
 
 @torch.no_grad()
@@ -61,6 +68,7 @@ def evaluate_loader(
         decoded = decode.greedy_decode(log_probs.cpu(), lengths)
         for i, (item, reference) in enumerate(zip(decoded, batch["logical_text"])):
             result.report.add(reference, item.logical, item.confidence)
+            result.pairs.append((reference, item.logical))
             if item.logical != reference and len(result.errors) < max(1, max_errors):
                 image = None
                 if max_errors and batch["paths"][i]:
@@ -71,16 +79,40 @@ def evaluate_loader(
     return result
 
 
+def apply_lexicon_decoding(result: EvalResult,
+                           corrector: "postprocess.WordCorrector | None" = None) -> EvalResult:
+    """Adds a second report computed on lexicon-corrected hypotheses."""
+    from .postprocess import WordCorrector
+    from .lexicon import default_lexicon
+
+    corrector = corrector or WordCorrector(default_lexicon())
+    report = metrics.Report()
+    for reference, hypothesis in result.pairs:
+        corrected = corrector.correct_text(hypothesis)
+        report.add(reference, corrected)
+        if reference != corrected:
+            for example in result.errors:
+                if example.hypothesis == hypothesis:
+                    example.hypothesis = corrected
+    result.lexicon_report = report
+    return result
+
+
 def evaluate_split(
     model: torch.nn.Module,
     cfg: Config,
     root: str | Path,
     device: torch.device = torch.device("cpu"),
     max_errors: int = 0,
+    lexicon_decode: bool = False,
 ) -> EvalResult:
     dataset = ds.OnDiskDataset(root, cfg)
     loader = ds.make_loader(dataset, cfg, shuffle=False, workers=0)
-    return evaluate_loader(model, cfg, loader, device, name=Path(root).name, max_errors=max_errors)
+    result = evaluate_loader(model, cfg, loader, device, name=Path(root).name,
+                             max_errors=max_errors)
+    if lexicon_decode:
+        apply_lexicon_decoding(result)
+    return result
 
 
 def evaluate_synthetic(
@@ -122,14 +154,18 @@ def evaluate_checkpoint(
     device: str = "cpu",
     max_errors: int = 0,
     error_dir: str | Path | None = None,
+    lexicon_decode: bool = False,
 ) -> dict[str, EvalResult]:
     """Evaluate one checkpoint on several exported splits."""
     model, cfg, _ = model_mod.load_checkpoint(checkpoint, device=device)
     results: dict[str, EvalResult] = {}
     for name, root in splits.items():
-        result = evaluate_split(model, cfg, root, torch.device(device), max_errors=max_errors)
+        result = evaluate_split(model, cfg, root, torch.device(device), max_errors=max_errors,
+                                lexicon_decode=lexicon_decode)
         results[name] = result
         print(f"[eval] {result.line()}", flush=True)
+        if lexicon_decode:
+            print(f"[eval] {result.lexicon_line()}", flush=True)
         if error_dir and result.errors:
             save_error_examples(result, Path(error_dir) / name)
     return results

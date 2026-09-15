@@ -5,11 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from typing import Sequence
+
 import numpy as np
 import torch
 from PIL import Image
 
-from . import augment, decode, detect, model as model_mod
+from . import augment, bidi, decode, detect, model as model_mod
 from .config import DEFAULT_CHECKPOINT, Config
 
 
@@ -61,20 +63,36 @@ class PageResult:
 
 
 class Recognizer:
-    """Wraps the trained CRNN for convenient inference."""
+    """Wraps the trained CRNN for convenient inference.
+
+    ``lexicon_decode`` additionally corrects recognised words with the built-in
+    Hebrew word list (:mod:`hwocr.postprocess`) - off by default, see that
+    module for the trade-offs.
+    """
 
     def __init__(self, model: model_mod.CRNN, cfg: Config, meta: dict | None = None,
-                 device: str = "cpu") -> None:
+                 device: str = "cpu", lexicon_decode: bool = False,
+                 lexicon_words: Sequence[str] | None = None) -> None:
         self.model = model
         self.cfg = cfg
         self.meta = meta or {}
         self.device = device
+        self.lexicon_decode = lexicon_decode
+        self.corrector = None
+        if lexicon_decode:
+            from .lexicon import default_lexicon
+            from .postprocess import WordCorrector
+
+            self.corrector = WordCorrector(lexicon_words or default_lexicon())
 
     # ------------------------------------------------------------------
     @classmethod
-    def load(cls, checkpoint: str | Path = DEFAULT_CHECKPOINT, device: str = "cpu") -> "Recognizer":
+    def load(cls, checkpoint: str | Path = DEFAULT_CHECKPOINT, device: str = "cpu",
+             lexicon_decode: bool = False,
+             lexicon_words: Sequence[str] | None = None) -> "Recognizer":
         model, cfg, meta = model_mod.load_checkpoint(checkpoint, device=device)
-        return cls(model, cfg, meta, device=device)
+        return cls(model, cfg, meta, device=device, lexicon_decode=lexicon_decode,
+                   lexicon_words=lexicon_words)
 
     # ------------------------------------------------------------------
     def recognize_batch(self, images: list[np.ndarray]) -> list[decode.Decoded]:
@@ -121,13 +139,19 @@ class Recognizer:
             crops = [box.crop(gray) for box in boxes]
 
         decoded = self.recognize_batch(crops)
-        lines = [
-            LineResult(
-                logical=item.logical,
-                visual=item.visual,
+        lines = []
+        for item, box in zip(decoded, boxes):
+            logical = item.logical
+            visual = item.visual
+            if self.corrector is not None:
+                corrected = self.corrector.correct_text(logical)
+                if corrected != logical:
+                    visual = bidi.logical_to_visual(corrected)
+                    logical = corrected
+            lines.append(LineResult(
+                logical=logical,
+                visual=visual,
                 confidence=item.confidence,
                 box=box.as_list() if box is not None else None,
-            )
-            for item, box in zip(decoded, boxes)
-        ]
+            ))
         return PageResult(lines=lines, image_size=(gray.shape[1], gray.shape[0]))

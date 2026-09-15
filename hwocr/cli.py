@@ -29,21 +29,22 @@ def _build_config(args: argparse.Namespace) -> Config:
     cfg = Config.load(args.config) if getattr(args, "config", None) else Config()
     overrides = {
         "batch_size": getattr(args, "batch_size", None),
-        "steps_plain": getattr(args, "steps_plain", None),
+        "lr": getattr(args, "lr", None),
+        "steps_short": getattr(args, "steps_short", None),
+        "steps_medium": getattr(args, "steps_medium", None),
         "steps_light": getattr(args, "steps_light", None),
         "steps_heavy": getattr(args, "steps_heavy", None),
         "val_every": getattr(args, "val_every", None),
         "val_samples": getattr(args, "val_samples", None),
         "workers": getattr(args, "workers", None),
         "torch_threads": getattr(args, "torch_threads", None),
-        "font_dirs": getattr(args, "font_dirs", None),
-        "lexicon_path": getattr(args, "lexicon", None),
     }
     for key, value in overrides.items():
         if value is not None:
-            if key == "lexicon_path":
-                continue
             setattr(cfg, key, value)
+    extra_dirs = getattr(args, "font_dir", None)
+    if extra_dirs:
+        cfg.font_dirs = list(cfg.font_dirs) + [str(d) for d in extra_dirs]
     return cfg
 
 
@@ -118,7 +119,7 @@ def cmd_pretrain(args: argparse.Namespace) -> int:
                                include_system=args.include_system_fonts)
     result = pretrain.train_letters(cfg, specs, steps=args.steps,
                                     batch_size=args.batch_size or 32,
-                                    lr=args.lr, out_path=args.out,
+                                    lr=args.lr or 2e-3, out_path=args.out,
                                     val_every=args.val_every)
     print(f"[cli] letter accuracy {result['accuracy']:.4f} -> {result['path']}")
     print(f"[cli] next: python -m hwocr.cli train --init-from {result['path']}")
@@ -145,11 +146,14 @@ def cmd_eval(args: argparse.Namespace) -> int:
         print("[cli] no exported splits found - run 'generate' first")
         return 2
     results = evaluate.evaluate_checkpoint(
-        args.checkpoint, splits, max_errors=args.save_errors, error_dir=args.errors_dir
+        args.checkpoint, splits, max_errors=args.save_errors, error_dir=args.errors_dir,
+        lexicon_decode=args.lexicon_decode,
     )
     print("\n[cli] summary")
     for name, result in results.items():
         print(f"  {result.line()}")
+        if args.lexicon_decode:
+            print(f"  {result.lexicon_line()}")
     return 0
 
 
@@ -307,8 +311,8 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     print(f"[baseline] tesseract (psm={args.psm}) {tess.summary()}")
 
     if Path(args.checkpoint).exists():
-        from . import model as model_mod
-        from . import dataset as ds, torch
+        from . import evaluate, model as model_mod
+
         model, cfg, _ = model_mod.load_checkpoint(args.checkpoint)
         result = evaluate.evaluate_split(model, cfg, root, max_errors=0)
         print(f"[baseline] hwocr CRNN          {result.report.summary()}")
@@ -346,6 +350,7 @@ def _add_tuning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--steps-heavy", type=int, help="stage 3 steps (photo-like)")
     parser.add_argument("--val-every", type=int)
     parser.add_argument("--val-samples", type=int)
+    parser.add_argument("--lr", type=float, help="peak learning rate")
     parser.add_argument("--workers", type=int, help="DataLoader workers")
     parser.add_argument("--torch-threads", type=int)
     parser.add_argument("--lexicon", help="plain text word list to use instead of the built-in one")
@@ -398,7 +403,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_tuning_args(p)
     p.add_argument("--out", default=str(pretrain_mod.DEFAULT_PRETRAINED))
     p.add_argument("--steps", type=int, default=800)
-    p.add_argument("--lr", type=float, default=2e-3)
     p.set_defaults(func=cmd_pretrain)
 
     p = sub.add_parser("eval", help="evaluate a checkpoint on exported splits")
@@ -408,6 +412,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--save-errors", type=int, default=0,
                    help="keep at most this many misrecognised lines per split")
     p.add_argument("--errors-dir", help="where to write the error examples")
+    p.add_argument("--lexicon-decode", action="store_true",
+                   help="also score the output corrected with the word list")
     p.set_defaults(func=cmd_eval)
 
     p = sub.add_parser("demo", help="render text with the font and recognise it")

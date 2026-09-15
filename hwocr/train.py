@@ -102,13 +102,19 @@ def train(
     model = model_mod.build_model(cfg).to(device)
     if init_from:
         blob = torch.load(str(init_from), map_location=device, weights_only=False)
-        state = blob.get("state_dict", blob)
+        if isinstance(blob, dict):
+            state = blob.get("state_dict") or blob.get("model") or blob
+        else:  # pragma: no cover - plain state dict
+            state = blob
         missing, unexpected = model.load_state_dict(state, strict=False)
+        loaded = len(state) - len(unexpected)
+        if loaded <= 0:
+            raise ValueError(f"'{init_from}' does not look like a model checkpoint")
         if not quiet:
-            print(f"[train] warm start from {init_from} "
-                  f"(missing={len(missing)}, unexpected={len(unexpected)}, "
-                  f"letter accuracy={max((e['val_accuracy'] for e in blob.get('history', [])), default=0):.3f})",
-                  flush=True)
+            accuracy = max((entry["val_accuracy"] for entry in blob.get("history", [])), default=0.0) \
+                if isinstance(blob, dict) else 0.0
+            print(f"[train] warm start from {init_from}: {loaded} tensors loaded "
+                  f"(letter accuracy {accuracy:.3f})", flush=True)
     if not quiet:
         print(f"[train] parameters: {model_mod.count_parameters(model)/1e6:.2f}M, "
               f"classes: {charset.num_classes()}, input: {cfg.img_height}x{cfg.max_width}",

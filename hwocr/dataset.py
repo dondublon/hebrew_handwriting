@@ -240,9 +240,12 @@ class BucketedBatchSampler(Sampler[list[int]]):
                 rng.shuffle(window)
             keyed = sorted(window, key=self.key_fn)
             batches = [keyed[i:i + self.batch_size] for i in range(0, len(keyed), self.batch_size)]
-            batches = [b for b in batches if len(b) == self.batch_size]
             if self.shuffle:
+                batches = [b for b in batches if len(b) == self.batch_size]  # keep batches uniform
                 rng.shuffle(batches)
+            else:
+                # evaluation: keep the (smaller) last batch so that every sample is scored
+                batches = [b for b in batches if b]
             yield from batches
 
 
