@@ -94,6 +94,8 @@ def apply_lexicon_decoding(result: EvalResult,
             for example in result.errors:
                 if example.hypothesis == hypothesis:
                     example.hypothesis = corrected
+    # keep the mean confidence comparable with the uncorrected report
+    report.confidence_sum = result.report.confidence_sum
     result.lexicon_report = report
     return result
 

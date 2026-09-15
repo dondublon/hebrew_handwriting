@@ -85,6 +85,43 @@ def export_split(
     return root
 
 
+def export_from_dataset(
+    root: str | Path,
+    dataset: "ds.SyntheticLineDataset",
+    size: int | None = None,
+    progress_every: int = 250,
+) -> Path:
+    """Export the samples of a :class:`SyntheticLineDataset` to disk.
+
+    Because the dataset content is a pure function of ``(seed, index)``, the
+    exported split is identical to what the training loop sees on its
+    validation pass - the numbers in the training log and in ``eval`` are
+    therefore directly comparable.
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    total = len(dataset) if size is None else min(size, len(dataset))
+    rows: list[str] = []
+    for i in range(total):
+        image, logical, visual, spec = dataset.render_sample(i)
+        if not charset.is_supported(visual):
+            continue
+        name = f"{spec.path.stem.replace(' ', '_')}_{i:06d}.png"
+        Image.fromarray(image).save(root / name)
+        rows.append(f"{name}\t{visual}\t{logical}")
+        if progress_every and (i + 1) % progress_every == 0:
+            print(f"[generate] {root.name}: {i + 1}/{total}", flush=True)
+    (root / "labels.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    (root / "info.txt").write_text(
+        f"source=dataset\nseed={dataset.seed}\nsize={len(rows)}\n"
+        f"heavy_prob={dataset.heavy_prob}\naugment_prob={dataset.augment_prob}\n"
+        f"fonts={[spec.name for spec in dataset.specs]}\n",
+        encoding="utf-8",
+    )
+    print(f"[generate] {root}: {len(rows)} lines written", flush=True)
+    return root
+
+
 def export_split_pango(
     root: str | Path,
     cfg: Config,
@@ -156,7 +193,11 @@ def generate_all(
     for name, size in sizes.items():
         seed, heavy = SPLIT_SEEDS.get(name, (cfg.seed, 0.0))
         heavy = cfg.p_heavy_aug if heavy is None else heavy
-        result[name] = export_split(base / name, cfg, specs, size, seed, heavy, words)
+        # Generated through the dataset so that (for example) data/val is the
+        # very same subset the training loop reports on.
+        dataset = ds.SyntheticLineDataset(cfg, specs, seed=seed, length=size,
+                                          heavy_prob=heavy, words=words)
+        result[name] = export_from_dataset(base / name, dataset, size, progress_every=250)
 
     # One split per font: shows how well the model generalises to a font it
     # has never seen (including fonts added later).

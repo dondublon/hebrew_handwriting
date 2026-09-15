@@ -122,6 +122,7 @@ def segment_lines(
     image: np.ndarray,
     min_height: int = 8,
     min_ink: int = 8,
+    min_density: float = 0.02,
     pad: int = 3,
     max_side: int = 1600,
 ) -> list[LineBox]:
@@ -148,7 +149,12 @@ def segment_lines(
         y0 = min(b[1] for b in cluster)
         x1 = max(b[2] for b in cluster)
         y1 = max(b[3] for b in cluster)
-        if (y1 - y0) < min_height:
+        if (y1 - y0) < min_height or (x1 - x0) < min_height:
+            continue
+        # Dust and noise blobs are large but almost empty: a real text line has
+        # a much higher ink density inside its box.
+        patch = binary[y0:y1, x0:x1]
+        if patch.size == 0 or float((patch > 0).mean()) < min_density:
             continue
         lines.append(LineBox(max(0, x0 - pad), max(0, y0 - pad),
                              min(gray.shape[1], x1 + pad), min(gray.shape[0], y1 + pad)))

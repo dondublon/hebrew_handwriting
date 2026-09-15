@@ -92,23 +92,32 @@ class SyntheticLineDataset(Dataset):
         return len(visual)
 
 
-    def __getitem__(self, index: int) -> dict:
+    def render_sample(self, index: int) -> tuple[np.ndarray, str, str, "fonts.FontSpec"]:
+        """Renders one sample: (uint8 image, logical text, visual text, font).
+
+        Used both by ``__getitem__`` and by :mod:`hwocr.generate`, so an
+        exported split is *exactly* the same data (same seed, same per-index
+        random stream) as what the training loop validates on.
+        """
         rng = random.Random(self.seed * 1_000_003 + int(index))
         _, visual, spec = self.sample_text(rng)
-        label = charset.encode(visual)
-        if not label:  # pathological case - fall back to a fixed sample
-            visual, label = "םולש", charset.encode("םולש")
-
         image = render.render_line(visual, spec, rng, self.cfg)
         if self.augment_prob >= 1.0 or rng.random() < self.augment_prob:
             image = augment.apply_augment(image, rng, heavy=rng.random() < self.heavy_prob)
+        return image, bidi.visual_to_logical(visual), visual, spec
+
+    def __getitem__(self, index: int) -> dict:
+        image, logical, visual, spec = self.render_sample(index)
+        label = charset.encode(visual)
+        if not label:  # pathological case - fall back to a fixed sample
+            visual, label, logical = "םולש", charset.encode("םולש"), "שלום"
         arr, valid_w = augment.to_model_input(image, self.cfg.img_height, self.cfg.max_width)
         return {
             "image": torch.from_numpy(arr),
             "label": torch.tensor(label, dtype=torch.long),
             "valid_width": int(valid_w),
             "font": spec.name,
-            "logical_text": bidi.visual_to_logical(visual),
+            "logical_text": logical,
         }
 
 
