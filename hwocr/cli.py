@@ -20,8 +20,8 @@ import json
 import sys
 from pathlib import Path
 
-from .config import DEFAULT_CHECKPOINT, DATA_DIR, RUNS_DIR, Config
-from . import pretrain as pretrain_mod
+from hwocr.config import DEFAULT_CHECKPOINT, DATA_DIR, RUNS_DIR, Config
+from hwocr import pretrain as pretrain_mod
 
 
 def _build_config(args: argparse.Namespace) -> Config:
