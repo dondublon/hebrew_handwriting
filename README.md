@@ -154,7 +154,18 @@ python3 -m hwocr.cli eval --checkpoint models/crnn_gveret.pt \
 модель «сыпется».
 
 Вес шрифта при сэмплировании задаётся в конфиге (`font_weights`), чтобы обучение не
-смещалось в сторону шрифта, который нужен лишь изредка.
+смещалось в сторону шрифта, который нужен лишь изредка. Если в `fonts/` лежит несколько
+шрифтов, а обучить нужно только на одном, используйте `--fonts-only`:
+
+```bash
+python3 -m hwocr.cli train --fonts-only --font 'fonts/Gveret Levin Alef Alef Alef.ttf'
+
+# мультишрифтовая модель: оба шрифта попадут в обучение со своими весами
+python3 -m hwocr.cli train --fonts-only \
+    --font 'fonts/Gveret Levin Alef Alef Alef.ttf' --font fonts/guttman-yad-brush.ttf \
+    --checkpoint models/crnn_two_fonts.pt
+```
+
 
 ## Результаты
 

@@ -21,7 +21,7 @@ from fontTools.ttLib import TTFont
 from PIL import ImageFont
 
 from . import charset
-from .config import Config
+from .config import FONT_DIR, Config
 
 FONT_SUFFIXES = (".ttf", ".otf", ".ttc")
 
@@ -148,6 +148,11 @@ def resolve_fonts(
             continue
         seen.add(key)
         unique.append(spec)
+    if not unique and FONT_DIR.exists():
+        # A checkpoint may carry a configuration without font directories (e.g.
+        # it was trained with --fonts-only); fall back to the project fonts so
+        # that rendering-based commands keep working.
+        unique = discover_fonts([FONT_DIR])
     if not unique:
         raise RuntimeError(
             "No usable Hebrew fonts found. Put a .ttf file into 'fonts/' or pass --font."
