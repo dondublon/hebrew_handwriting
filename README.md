@@ -354,6 +354,7 @@ hwocr/
 scripts/run_poc.sh            весь пайплайн одной командой
 scripts/report.sh             метрики + бейзлайн + демо (см. «Результаты»)
 scripts/web_smoke_test.py     проверка API веб-UI (рамки, разметка) без браузера
+scripts/inspect_boxes.py      разбор конкретных рамок: кроп, текст, уверенность, Tesseract
 data/real/                    размеченные вручную примеры (создаётся UI, в .gitignore)
 ```
 
