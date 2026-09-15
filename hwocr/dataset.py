@@ -39,6 +39,7 @@ class SyntheticLineDataset(Dataset):
         seed: int = 0,
         length: int = 1_000_000,
         heavy_prob: float | None = None,
+        augment_prob: float | None = None,
         words: Sequence[str] | None = None,
     ) -> None:
         self.cfg = cfg
@@ -50,6 +51,13 @@ class SyntheticLineDataset(Dataset):
         self.seed = int(seed)
         self.length = int(length)
         self.heavy_prob = cfg.p_heavy_aug if heavy_prob is None else float(heavy_prob)
+        # Probability that *any* image level augmentation is applied at all.
+        # The first training stage runs with 0.0: a CRNN trained from scratch
+        # converges much faster on clean renderings, the augmentations are then
+        # faded in.
+        self.augment_prob = (
+            cfg.p_light_aug if augment_prob is None else float(augment_prob)
+        )
 
         base_words = list(words) if words else lexicon.default_lexicon()
         self.prepared: list[tuple[fonts.FontSpec, set[str], list[str]]] = []
@@ -87,7 +95,8 @@ class SyntheticLineDataset(Dataset):
             visual, label = "םולש", charset.encode("םולש")
 
         image = render.render_line(visual, spec, rng, self.cfg)
-        image = augment.apply_augment(image, rng, heavy=rng.random() < self.heavy_prob)
+        if self.augment_prob >= 1.0 or rng.random() < self.augment_prob:
+            image = augment.apply_augment(image, rng, heavy=rng.random() < self.heavy_prob)
         arr, valid_w = augment.to_model_input(image, self.cfg.img_height, self.cfg.max_width)
         return {
             "image": torch.from_numpy(arr),

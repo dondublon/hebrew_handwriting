@@ -36,6 +36,7 @@ class Config:
     max_word_len: int = 12
     p_real_word: float = 0.70     # probability of a real word vs. pseudo word
     p_digits: float = 0.06        # probability of a numeric token
+    p_light_aug: float = 1.0      # probability of applying image augmentations at all
     p_heavy_aug: float = 0.35     # probability of the "photo/camera" pipeline
 
     # ---- model ----------------------------------------------------------
