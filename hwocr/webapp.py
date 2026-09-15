@@ -26,7 +26,7 @@ from PIL import Image, ImageOps
 from . import augment, bidi, charset, dataset as ds, fonts, metrics, ocr, render
 from .config import DEFAULT_CHECKPOINT, PROJECT_ROOT
 
-INDEX_HTML = """<!DOCTYPE html>
+INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
 <meta charset="utf-8">
@@ -73,6 +73,17 @@ INDEX_HTML = """<!DOCTYPE html>
   .editor svg .handle[data-h="n"], .editor svg .handle[data-h="s"] { cursor: ns-resize; }
   .editor svg .handle[data-h="w"], .editor svg .handle[data-h="e"] { cursor: ew-resize; }
   .editor svg .handle[data-h="ne"], .editor svg .handle[data-h="sw"] { cursor: nesw-resize; }
+  /* номера рамок */
+  .editor svg .badge { fill: #2f5bd4; cursor: move; }
+  .editor svg .badge.selected { fill: #d32f2f; }
+  .editor svg .badge-text { fill: #fff; font-family: system-ui, sans-serif; pointer-events: none; }
+  textarea.coords { width: 100%; box-sizing: border-box; margin-top: 8px; font-family: ui-monospace,
+      SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.45; direction: ltr;
+      padding: 8px 10px; border: 1px solid #c8d0dd; border-radius: 8px; background: #f8fafc;
+      resize: vertical; }
+  .results .coord { color: #55637d; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas,
+      monospace; font-size: 12px; cursor: copy; white-space: nowrap; }
+  .results .coord:hover { color: #2f5bd4; text-decoration: underline; }
   .results { list-style: none; padding: 0; margin: 12px 0 0; }
   .results li { display: flex; gap: 10px; align-items: baseline; padding: 6px 8px;
                 border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
@@ -115,6 +126,14 @@ INDEX_HTML = """<!DOCTYPE html>
       <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
     <ul class="results" id="results"></ul>
+    <div class="toolbar" id="coords-tools" hidden>
+      <button class="ghost" id="btn-copy">Скопировать координаты</button>
+      <button class="ghost" id="btn-json">Скопировать JSON</button>
+      <button class="ghost" id="btn-apply">Применить координаты из текста</button>
+      <span class="meta">формат: «номер: x0, y0, x1, y1» (или JSON) — можно править и вставлять</span>
+    </div>
+    <textarea class="coords" id="coords" rows="4" spellcheck="false" hidden
+      placeholder="1: 100, 50, 300, 90&#10;2: 100, 120, 300, 160"></textarea>
     <div class="row"><pre class="out" id="text-out"></pre></div>
     <div class="meta" id="text-meta"></div>
   </section>
@@ -207,6 +226,16 @@ function render() {
     const w = Math.abs(b[2] - b[0]), h = Math.abs(b[3] - b[1]);
     html += '<rect class="' + cls + '" data-idx="' + i + '" x="' + x + '" y="' + y +
             '" width="' + w + '" height="' + h + '" vector-effect="non-scaling-stroke"/>';
+    // номер рамки (виден всегда, за него тоже можно тянуть)
+    const badgeH = hs * 2.8;
+    const badgeW = Math.max(badgeH, badgeH * 0.62 * String(i + 1).length + hs * 0.6);
+    const badgeY = y - badgeH >= 0 ? y - badgeH : y;
+    html += '<rect class="badge' + (selected ? ' selected' : '') + '" data-idx="' + i +
+            '" x="' + x + '" y="' + badgeY + '" width="' + badgeW + '" height="' + badgeH +
+            '" rx="' + (hs * 0.6) + '" vector-effect="non-scaling-stroke"/>' +
+            '<text class="badge-text" x="' + (x + badgeW / 2) + '" y="' +
+            (badgeY + badgeH * 0.78) + '" font-size="' + (badgeH * 0.72) +
+            '" text-anchor="middle">' + (i + 1) + '</text>';
     if (selected) {
       const cx = x + w / 2, cy = y + h / 2;
       const points = [[x, y, 'nw'], [cx, y, 'n'], [x + w, y, 'ne'], [x + w, cy, 'e'],
@@ -220,6 +249,74 @@ function render() {
   });
   overlay.innerHTML = html;
   renderResults();
+  updateCoords();
+}
+
+// ---- координаты рамок как текст --------------------------------------------
+function coordsLines() {
+  return state.boxes.map((b, i) =>
+    (i + 1) + ': ' + b.map(v => Math.round(v)).join(', '));
+}
+
+function updateCoords() {
+  const area = document.getElementById('coords');
+  if (document.activeElement !== area) area.value = coordsLines().join('\n');
+}
+
+function copyText(text, label) {
+  const done = () => showStatus(label + ' скопировано в буфер');
+  const fallback = () => {
+    const area = document.getElementById('coords');
+    area.value = text;
+    area.hidden = false;
+    area.focus();
+    area.select();
+    try { document.execCommand('copy'); done(); }
+    catch (e) { showStatus('не удалось скопировать — выделите текст вручную'); }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(fallback);
+  } else {
+    fallback();
+  }
+}
+
+function parseCoords(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith('[')) {          // JSON вида [[x0,y0,x1,y1], ...]
+    try {
+      const data = JSON.parse(trimmed);
+      const boxes = [];
+      for (const item of (Array.isArray(data) ? data : [])) {
+        if (Array.isArray(item) && item.length >= 4) {
+          boxes.push(item.slice(0, 4).map(Number));
+        }
+      }
+      if (boxes.length) return boxes;
+    } catch (e) { /* пробуем разобрать как текст */ }
+  }
+  const boxes = [];
+  for (const line of trimmed.split(/\n+/)) {
+    const numbers = (line.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+    if (numbers.length >= 4) {
+      // в строке «3: 10, 20, 30, 40» первое число — номер рамки
+      boxes.push(numbers.length >= 5 ? numbers.slice(-4) : numbers.slice(0, 4));
+    }
+  }
+  return boxes;
+}
+
+function applyCoords() {
+  const boxes = parseCoords(document.getElementById('coords').value);
+  if (!boxes.length) { showStatus('в тексте не нашёл координат'); return; }
+  state.boxes = boxes.map(b => [b[0], b[1], b[2], b[3]]);
+  state.texts = state.boxes.map(() => ({ text: '', confidence: null }));
+  state.labels = state.boxes.map(() => '');
+  state.saved = state.boxes.map(() => false);
+  state.selected = -1;
+  render();
+  showStatus('применено рамок: ' + boxes.length + ' — нажмите «Распознать рамки»');
 }
 
 function renderResults() {
@@ -233,6 +330,8 @@ function renderResults() {
            '<span class="num">#' + (i + 1) + (state.saved[i] ? ' ✓' : '') + '</span>' +
            '<input class="label" data-idx="' + i + '" value="' + escapeHtml(typed) + '"' +
            ' placeholder="правильный текст этой строки">' +
+           '<span class="coord" data-idx="' + i + '" title="скопировать координаты этой рамки">[' +
+             b.map(v => Math.round(v)).join(',') + ']</span>' +
            '<span class="conf">' + conf + '</span>' +
            '<button class="save" data-idx="' + i + '"' +
            ' title="сохранить вырезанную строку и текст в обучающую выборку">💾</button>' +
@@ -326,6 +425,8 @@ function loadFile(file) {
     state.selected = -1;
     editor.hidden = false;
     toolbar.hidden = false;
+    document.getElementById('coords-tools').hidden = false;
+    document.getElementById('coords').hidden = false;
     render();
     recognize(true);          // сразу показываем авто-разметку
   };
@@ -444,6 +545,15 @@ resultsBox.addEventListener('click', async evt => {
     await saveLabel(Number(button.dataset.idx));
     return;
   }
+  const coord = evt.target.closest('span.coord');
+  if (coord) {
+    const index = Number(coord.dataset.idx);
+    state.selected = index;
+    render();
+    copyText((index + 1) + ': ' + state.boxes[index].map(v => Math.round(v)).join(', '),
+             'координаты рамки ' + (index + 1));
+    return;
+  }
   if (evt.target.closest('input')) return;   // это ввод текста, а не выбор рамки
   const item = evt.target.closest('li');
   if (!item) return;
@@ -451,6 +561,12 @@ resultsBox.addEventListener('click', async evt => {
   render();
   overlay.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 });
+
+document.getElementById('btn-copy').onclick = () =>
+  copyText(coordsLines().join('\n'), 'координаты');
+document.getElementById('btn-json').onclick = () =>
+  copyText(JSON.stringify(state.boxes.map(b => b.map(v => Math.round(v)))), 'JSON');
+document.getElementById('btn-apply').onclick = () => applyCoords();
 
 document.getElementById('btn-recognize').onclick = () => recognize(false);
 document.getElementById('btn-auto').onclick = () => recognize(true);
