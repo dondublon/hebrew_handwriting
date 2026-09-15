@@ -107,6 +107,8 @@ def cmd_train(args: argparse.Namespace) -> int:
         words=words,
         log_path=args.log or (RUNS_DIR / "train_log.csv"),
         init_from=args.init_from,
+        real_dir=args.real_dir,
+        p_real=args.p_real,
     )
     print(f"[cli] best: {result['best']['report']} at step {result['best']['step']}")
     print(f"[cli] next: python -m hwocr.cli eval --checkpoint {result['checkpoint']}")
@@ -329,7 +331,8 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 def cmd_serve(args: argparse.Namespace) -> int:
     from . import webapp
 
-    webapp.serve(args.checkpoint, host=args.host, port=args.port)
+    webapp.serve(args.checkpoint, host=args.host, port=args.port,
+                 label_dir=args.label_dir)
     return 0
 
 
@@ -406,6 +409,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
     p.add_argument("--log", help="CSV log path (default: runs/train_log.csv)")
     p.add_argument("--init-from", help="warm start from a 'pretrain' checkpoint")
+    p.add_argument("--real-dir", metavar="DIR",
+                   help="folder with hand-labelled images (labels.tsv) to mix into training")
+    p.add_argument("--p-real", type=float, default=0.35,
+                   help="probability of a hand-labelled sample (default 0.35)")
     p.set_defaults(func=cmd_train)
 
     p = sub.add_parser("pretrain", help="warm start: train the CNN on isolated letters")
@@ -463,6 +470,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8009)
+    p.add_argument("--label-dir", help="where hand-labelled crops are saved (default data/real)")
     p.set_defaults(func=cmd_serve)
 
     return parser

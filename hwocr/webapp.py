@@ -23,8 +23,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-from . import augment, charset, dataset as ds, fonts, metrics, ocr, render
-from .config import DEFAULT_CHECKPOINT
+from . import augment, bidi, charset, dataset as ds, fonts, metrics, ocr, render
+from .config import DEFAULT_CHECKPOINT, PROJECT_ROOT
 
 INDEX_HTML = """<!DOCTYPE html>
 <html lang="he" dir="rtl">
@@ -81,6 +81,12 @@ INDEX_HTML = """<!DOCTYPE html>
   .results .num { color: #7b879c; font-size: 12px; min-width: 28px; }
   .results .txt { direction: rtl; unicode-bidi: plaintext; font-size: 18px; flex: 1; }
   .results .conf { color: #55637d; font-size: 12px; white-space: nowrap; }
+  .results input.label { direction: rtl; unicode-bidi: plaintext; font-family: inherit;
+                         font-size: 16px; flex: 1; min-width: 120px; padding: 4px 8px;
+                         border: 1px solid #c8d0dd; border-radius: 6px; background: #fff; }
+  .results button.save { padding: 4px 9px; font-size: 13px; }
+  .results li.saved { background: #eefbf1; }
+  .results li.saved .num { color: #2e7d32; }
 </style>
 </head>
 <body>
@@ -101,6 +107,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <button class="danger" id="btn-del">Удалить</button>
       <button class="ghost" id="btn-clear">Убрать все</button>
       <label class="meta"><input type="checkbox" id="lexicon"> словарь</label>
+      <span class="meta" id="label-count"></span>
       <span class="meta">рамки: тяните за уголки/стороны, «+ Рамка» — рисуйте новую; Delete — удалить выбранную</span>
     </div>
     <div class="editor" id="editor" hidden>
@@ -153,6 +160,8 @@ const state = {
   natW: 0, natH: 0,
   boxes: [],       // [[x0, y0, x1, y1], ...] в пикселях изображения
   texts: [],       // [{text, confidence}, ...] по рамкам
+  labels: [],      // правильный текст, который вводит пользователь
+  saved: [],       // сохранён ли пример (для обучающей выборки)
   selected: -1,
   addMode: false,
   busy: false,
@@ -160,6 +169,16 @@ const state = {
 let drag = null;
 
 function showStatus(s) { status.textContent = '| ' + s; }
+
+function escapeHtml(value) {
+  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// UTF-8 -> base64 (иначе иврит не помещается в HTTP-заголовок)
+function b64utf8(value) {
+  return btoa(unescape(encodeURIComponent(value)));
+}
 
 // размер ручек в пикселях изображения, чтобы на экране они были ~10 px
 function handleSize() {
@@ -208,11 +227,54 @@ function renderResults() {
     const info = state.texts[i] || { text: '', confidence: null };
     const conf = (info.confidence === null || info.confidence === undefined)
       ? '' : (info.confidence * 100).toFixed(0) + '%';
-    return '<li class="' + (i === state.selected ? 'selected' : '') + '" data-idx="' + i + '">' +
-           '<span class="num">#' + (i + 1) + '</span>' +
-           '<span class="txt">' + (info.text || '<span class="meta">(не распознано)</span>') + '</span>' +
-           '<span class="conf">' + conf + '</span></li>';
+    const typed = state.labels[i] !== undefined ? state.labels[i] : (info.text || '');
+    return '<li class="' + (i === state.selected ? 'selected' : '') +
+             (state.saved[i] ? ' saved' : '') + '" data-idx="' + i + '">' +
+           '<span class="num">#' + (i + 1) + (state.saved[i] ? ' ✓' : '') + '</span>' +
+           '<input class="label" data-idx="' + i + '" value="' + escapeHtml(typed) + '"' +
+           ' placeholder="правильный текст этой строки">' +
+           '<span class="conf">' + conf + '</span>' +
+           '<button class="save" data-idx="' + i + '"' +
+           ' title="сохранить вырезанную строку и текст в обучающую выборку">💾</button>' +
+           '</li>';
   }).join('');
+}
+
+// ---- сохранение обучающих примеров -----------------------------------------
+async function saveLabel(index) {
+  const text = (state.labels[index] || '').trim();
+  const box = state.boxes[index];
+  if (!box) return;
+  if (!text) { showStatus('введите правильный текст для этой рамки'); return; }
+  showStatus('сохраняю пример...');
+  try {
+    const resp = await fetch('/api/label', {
+      method: 'POST',
+      headers: {
+        'X-Box': JSON.stringify(box.map(v => Math.round(v))),
+        'X-Label': b64utf8(text),
+      },
+      body: state.blob,
+    });
+    const data = await resp.json();
+    if (!resp.ok) { showStatus('ошибка: ' + (data.error || resp.status)); return; }
+    state.saved[index] = true;
+    document.getElementById('label-count').textContent =
+      'примеров размечено: ' + data.count + ' → ' + data.dir;
+    render();
+    showStatus('пример сохранён: ' + data.saved);
+  } catch (e) {
+    showStatus('ошибка: ' + e);
+  }
+}
+
+async function refreshLabelCount() {
+  try {
+    const resp = await fetch('/api/labels');
+    const data = await resp.json();
+    document.getElementById('label-count').textContent =
+      'примеров размечено: ' + data.count + ' → ' + data.dir;
+  } catch (e) { /* не критично */ }
 }
 
 // ---- работа с сервером -----------------------------------------------------
@@ -235,6 +297,8 @@ async function recognize(auto) {
     const data = await resp.json();
     state.boxes = data.lines.map(line => line.box);
     state.texts = data.lines.map(line => ({ text: line.text, confidence: line.confidence }));
+    state.labels = state.texts.map(info => info.text || '');
+    state.saved = state.boxes.map(() => false);
     state.selected = state.boxes.length ? 0 : -1;
     render();
     document.getElementById('text-out').textContent = data.text || '(пусто)';
@@ -369,7 +433,18 @@ overlay.addEventListener('pointerup', evt => {
 overlay.addEventListener('pointercancel', () => { drag = null; });
 
 // ---- список рамок и кнопки -------------------------------------------------
-resultsBox.addEventListener('click', evt => {
+resultsBox.addEventListener('input', evt => {
+  const field = evt.target.closest('input.label');
+  if (field) state.labels[Number(field.dataset.idx)] = field.value;
+});
+
+resultsBox.addEventListener('click', async evt => {
+  const button = evt.target.closest('button.save');
+  if (button) {
+    await saveLabel(Number(button.dataset.idx));
+    return;
+  }
+  if (evt.target.closest('input')) return;   // это ввод текста, а не выбор рамки
   const item = evt.target.closest('li');
   if (!item) return;
   state.selected = Number(item.dataset.idx);
@@ -448,6 +523,7 @@ fetch('/api/status').then(r => r.json()).then(d => {
   showStatus('модель: ' + d.checkpoint + ', шрифтов: ' + d.fonts.length +
              ', классов: ' + d.classes + ', CER(val): ' + d.val_cer);
 });
+refreshLabelCount();
 </script>
 </body>
 </html>
@@ -481,8 +557,21 @@ class Handler(BaseHTTPRequestHandler):
     recognizer: ocr.Recognizer | None = None
     lexicon_recognizer: ocr.Recognizer | None = None
     checkpoint: str | None = None
+    label_dir: Path | None = None
     lock = threading.Lock()
     server_version = "hwocr/0.1"
+
+    def _labels_dir(self) -> Path:
+        """Folder with hand-labelled crops (used by ``train --real-dir``)."""
+        path = self.label_dir or (PROJECT_ROOT / "data" / "real")
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _labels_count(self) -> int:
+        labels = self._labels_dir() / "labels.tsv"
+        if not labels.exists():
+            return 0
+        return sum(1 for line in labels.read_text(encoding="utf-8").splitlines() if line.strip())
 
     def _picker(self, lexicon: bool) -> "ocr.Recognizer":
         """Recogniser with or without lexicon correction (cached)."""
@@ -524,7 +613,13 @@ class Handler(BaseHTTPRequestHandler):
                 "fonts": [spec.name for spec in fonts.resolve_fonts(cfg)],
                 "classes": charset.num_classes(),
                 "val_cer": None if val_cer is None else round(float(val_cer), 4),
+                "labels": self._labels_count(),
+                "label_dir": str(self._labels_dir()),
             })
+            return
+        if path == "/api/labels":
+            self._send_json({"count": self._labels_count(),
+                             "dir": str(self._labels_dir())})
             return
         self._send(404, b"not found", "text/plain")
 
@@ -535,6 +630,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/recognize":
                 self._recognize(body, segment="segment=0" not in query)
+            elif path == "/api/label":
+                self._save_label(body)
             elif path == "/api/demo":
                 self._demo(json.loads(body.decode("utf-8") or "{}"))
             else:
@@ -560,6 +657,62 @@ class Handler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     continue
         return boxes or None
+
+    def _box_from_header(self, name: str = "X-Box") -> list[int] | None:
+        """A single box from a header like ``X-Box: [x0,y0,x1,y1]``."""
+        raw = self.headers.get(name)
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, list) or len(data) < 4:
+            return None
+        try:
+            return [int(round(float(value))) for value in data[:4]]
+        except (TypeError, ValueError):
+            return None
+
+    def _save_label(self, body: bytes) -> None:
+        """Stores a hand-labelled crop (box + corrected text) for fine-tuning."""
+        box = self._box_from_header("X-Box")
+        raw_label = self.headers.get("X-Label")
+        if box is None or not raw_label:
+            self._send_json({"error": "X-Box and X-Label headers are required"}, code=400)
+            return
+        try:
+            text = base64.b64decode(raw_label).decode("utf-8").strip()
+        except Exception:
+            self._send_json({"error": "X-Label must be base64 of the UTF-8 text"}, code=400)
+            return
+        if not text:
+            self._send_json({"error": "empty label"}, code=400)
+            return
+        try:
+            with Image.open(io.BytesIO(body)) as handle:
+                image = np.asarray(ImageOps.exif_transpose(handle).convert("L"),
+                                   dtype=np.uint8)
+        except Exception:
+            self._send_json({"error": "unsupported image format"}, code=400)
+            return
+
+        height, width = image.shape[:2]
+        x0, y0, x1, y1 = box
+        x0, x1 = sorted((max(0, min(x0, width)), max(0, min(x1, width))))
+        y0, y1 = sorted((max(0, min(y0, height)), max(0, min(y1, height))))
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            self._send_json({"error": "box is too small"}, code=400)
+            return
+
+        directory = self._labels_dir()
+        count = self._labels_count()
+        name = f"real_{count:05d}.png"
+        Image.fromarray(image[y0:y1, x0:x1]).save(directory / name)
+        with (directory / "labels.tsv").open("a", encoding="utf-8") as handle:
+            handle.write(f"{name}\t{bidi.logical_to_visual(text)}\t{text}\n")
+        self._send_json({"saved": name, "count": count + 1, "text": text,
+                         "dir": str(directory)})
 
     def _recognize(self, body: bytes, segment: bool = True) -> None:
         if not body:
@@ -616,13 +769,20 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(checkpoint: str | Path = DEFAULT_CHECKPOINT, host: str = "127.0.0.1",
-          port: int = 8009) -> None:
-    """Load the checkpoint and serve the UI until interrupted."""
+          port: int = 8009, label_dir: str | Path | None = None) -> None:
+    """Load the checkpoint and serve the UI until interrupted.
+
+    ``label_dir`` is where hand-labelled crops are written (``data/real`` by
+    default); the training command picks them up via ``--real-dir``.
+    """
     checkpoint = str(checkpoint)
     Handler.recognizer = ocr.Recognizer.load(checkpoint)
     Handler.checkpoint = checkpoint
+    Handler.label_dir = Path(label_dir) if label_dir else None
+    resolved_labels = Handler.label_dir or (PROJECT_ROOT / "data" / "real")
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"[web] hwocr UI on http://{host}:{port}  (checkpoint: {checkpoint})")
+    print(f"[web] hand-labelled crops go to: {resolved_labels}")
     print("[web] Ctrl+C to stop")
     try:
         server.serve_forever()

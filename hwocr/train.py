@@ -30,10 +30,21 @@ def build_datasets(
     cfg: Config,
     specs: Sequence[fonts.FontSpec] | None = None,
     words: Sequence[str] | None = None,
+    real_dir: str | Path | None = None,
+    p_real: float = 0.35,
 ) -> tuple[ds.SyntheticLineDataset, ds.SyntheticLineDataset]:
     specs = list(specs) if specs else fonts.resolve_fonts(cfg)
-    train_set = ds.SyntheticLineDataset(cfg, specs, seed=cfg.seed, length=1_000_000,
-                                        heavy_prob=0.0, words=words)
+    train_set: ds.Dataset = ds.SyntheticLineDataset(cfg, specs, seed=cfg.seed,
+                                                    length=1_000_000,
+                                                    heavy_prob=0.0, words=words)
+    if real_dir:
+        real_set = ds.OnDiskDataset(real_dir, cfg)
+        if len(real_set) == 0:  # pragma: no cover - empty folder
+            raise ValueError(f"no labelled samples found in {real_dir}")
+        train_set = ds.MixedLineDataset(cfg, train_set, real_set, p_real=p_real,
+                                        seed=cfg.seed)
+        print(f"[train] mixing {len(real_set)} hand-labelled sample(s) from "
+              f"{real_dir} with p={p_real:.2f}", flush=True)
     val_set = ds.SyntheticLineDataset(cfg, specs, seed=ds.VAL_SEED, length=cfg.val_samples,
                                       heavy_prob=cfg.p_heavy_aug, words=words)
     return train_set, val_set
@@ -77,6 +88,8 @@ def train(
     words: Sequence[str] | None = None,
     log_path: str | Path | None = None,
     init_from: str | Path | None = None,
+    real_dir: str | Path | None = None,
+    p_real: float = 0.35,
     quiet: bool = False,
 ) -> dict[str, Any]:
     """Train the recogniser; returns a dict with the training history.
@@ -84,6 +97,10 @@ def train(
     ``init_from`` warm-starts the network from a checkpoint produced by
     :mod:`hwocr.pretrain` (letter classification) - strongly recommended, see
     that module for why.
+
+    ``real_dir`` mixes hand-labelled images (a folder with ``labels.tsv``, e.g.
+    ``data/real`` filled in through the web UI) into the training stream, which
+    adapts the model to the user's own fonts/scans.
     """
     cfg = cfg or Config()
     torch.manual_seed(cfg.seed)
@@ -96,7 +113,7 @@ def train(
     if not quiet:
         print("[train] fonts:\n" + fonts_info, flush=True)
 
-    train_set, val_set = build_datasets(cfg, specs, words)
+    train_set, val_set = build_datasets(cfg, specs, words, real_dir, p_real)
     val_loader = ds.make_loader(val_set, cfg, shuffle=False, workers=0)
 
     model = model_mod.build_model(cfg).to(device)

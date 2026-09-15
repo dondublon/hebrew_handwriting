@@ -192,6 +192,91 @@ def ctc_input_lengths(valid_widths: torch.Tensor, width_reduction: int, max_t: i
     return lengths.clamp(min=1, max=max_t).to(torch.long)
 
 
+class MixedLineDataset(Dataset):
+    """Mixes the synthetic stream with hand-labelled real images.
+
+    ``real`` is an :class:`OnDiskDataset` (a folder with ``labels.tsv``) - for
+    example crops taken from the user's own documents and labelled by hand
+    through the web UI.  A share of real samples adapts the recogniser to fonts
+    or handwriting that a synthetic-only pipeline cannot know.
+
+    The stage settings of the synthetic part (``heavy_prob``, ``augment_prob``,
+    ``max_words``, ``max_word_len``) are forwarded to it, so the training loop
+    keeps working unchanged.
+    """
+
+    def __init__(
+        self,
+        cfg: Config,
+        synthetic: SyntheticLineDataset,
+        real: "OnDiskDataset",
+        p_real: float = 0.35,
+        seed: int = 0,
+        length: int = 1_000_000,
+    ) -> None:
+        self.cfg = cfg
+        self.synthetic = synthetic
+        self.real = real
+        self.p_real = float(min(max(p_real, 0.0), 0.95))
+        self.seed = int(seed)
+        self.length = int(length)
+
+    # ---- stage settings are forwarded to the synthetic part -------------
+    @property
+    def heavy_prob(self) -> float:
+        return self.synthetic.heavy_prob
+
+    @heavy_prob.setter
+    def heavy_prob(self, value: float) -> None:
+        self.synthetic.heavy_prob = value
+
+    @property
+    def augment_prob(self) -> float:
+        return self.synthetic.augment_prob
+
+    @augment_prob.setter
+    def augment_prob(self, value: float) -> None:
+        self.synthetic.augment_prob = value
+
+    @property
+    def max_words(self) -> int:
+        return self.synthetic.max_words
+
+    @max_words.setter
+    def max_words(self, value: int) -> None:
+        self.synthetic.max_words = value
+
+    @property
+    def max_word_len(self) -> int:
+        return self.synthetic.max_word_len
+
+    @max_word_len.setter
+    def max_word_len(self, value: int) -> None:
+        self.synthetic.max_word_len = value
+
+    # ---- sampling --------------------------------------------------------
+    def _pick(self, index: int) -> tuple[str, int]:
+        rng = random.Random(self.seed * 1_000_003 + int(index))
+        if rng.random() < self.p_real:
+            return "real", rng.randrange(len(self.real))
+        return "synthetic", rng.randrange(len(self.synthetic))
+
+    def __len__(self) -> int:
+        return self.length
+
+    def length_key(self, index: int) -> int:
+        source, sub = self._pick(index)
+        if source == "real":
+            return self.real.length_key(sub)
+        return self.synthetic.length_key(sub)
+
+    def __getitem__(self, index: int) -> dict:
+        source, sub = self._pick(index)
+        if source == "real":
+            return self.real[sub]
+        return self.synthetic[sub]
+
+
 def worker_init(worker_id: int) -> None:
     # Data generation is CPU heavy; keep OpenCV single threaded inside workers.
     cv2.setNumThreads(0)
