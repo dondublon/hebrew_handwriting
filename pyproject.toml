@@ -5,4 +5,13 @@ description = "Add your description here"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=2.2.6",
+    "torch>=2.14.0",
 ]
+
+[tool.uv]
+index = [
+    { name = "pytorch-cpu", url = "https://download.pytorch.org/whl/cpu" }
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
