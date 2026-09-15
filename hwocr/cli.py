@@ -28,6 +28,7 @@ def _build_config(args: argparse.Namespace) -> Config:
     cfg = Config.load(args.config) if getattr(args, "config", None) else Config()
     overrides = {
         "batch_size": getattr(args, "batch_size", None),
+        "steps_plain": getattr(args, "steps_plain", None),
         "steps_light": getattr(args, "steps_light", None),
         "steps_heavy": getattr(args, "steps_heavy", None),
         "val_every": getattr(args, "val_every", None),
@@ -318,8 +319,10 @@ def _add_font_args(parser: argparse.ArgumentParser) -> None:
 
 def _add_tuning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--batch-size", type=int)
-    parser.add_argument("--steps-light", type=int, help="stage 1 steps (clean renderings)")
-    parser.add_argument("--steps-heavy", type=int, help="stage 2 steps (photo-like)")
+    parser.add_argument("--steps-plain", type=int,
+                        help="stage 1 steps (clean renderings, short texts)")
+    parser.add_argument("--steps-light", type=int, help="stage 2 steps (mild augmentations)")
+    parser.add_argument("--steps-heavy", type=int, help="stage 3 steps (photo-like)")
     parser.add_argument("--val-every", type=int)
     parser.add_argument("--val-samples", type=int)
     parser.add_argument("--workers", type=int, help="DataLoader workers")

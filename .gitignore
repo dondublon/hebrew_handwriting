@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.idea/
+.venv/
+venv/
+
+# generated artefacts
+data/
+models/
+runs/
+*.pt
+*.log

@@ -1,0 +1,12 @@
+# The proof of concept only needs these; everything is available on the
+# target machine already (no downloads, no GPU).
+torch>=2.0
+torchvision>=0.15
+numpy>=1.24
+opencv-python>=4.8
+Pillow>=10.0
+fonttools>=4.40
+
+# Optional: only for the Tesseract baseline comparison.
+# (needs the 'tesseract' binary with the 'heb' traineddata in PATH)
+# pytesseract is not required - hwocr.cli baseline calls the binary directly.

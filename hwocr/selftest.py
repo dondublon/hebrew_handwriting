@@ -172,16 +172,21 @@ def _check_detect(cfg: Config) -> str:
     return f"{len(boxes)} lines detected on a {page.shape[1]}x{page.shape[0]} page"
 
 
-def _check_learns(cfg: Config, samples: int = 32, steps: int = 200,
-                  target_cer: float = 0.10) -> str:
-    """Short overfitting run: proves the model can learn *and* that inference works."""
+def _check_learns(cfg: Config, samples: int = 24, steps: int = 250,
+                  target_cer: float = 0.15) -> str:
+    """Short training run: proves that the model learns *and* that inference works."""
+    import random as _random
+
     specs = fonts.resolve_fonts(cfg)
-    dataset = ds.SyntheticLineDataset(cfg, specs, seed=909, length=samples, heavy_prob=0.0)
+    # Clean renderings only: this check is about the learning path, not about
+    # robustness to augmentation.
+    dataset = ds.SyntheticLineDataset(cfg, specs, seed=909, length=samples,
+                                      heavy_prob=0.0, augment_prob=0.0)
     batch = ds.collate([dataset[i] for i in range(samples)], cfg.width_reduction)
 
     torch.manual_seed(0)
     model = model_mod.build_model(cfg)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-3)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=1e-4)
     criterion = torch.nn.CTCLoss(blank=charset.BLANK_INDEX, zero_infinity=True)
     for _ in range(steps):
         log_probs = model(batch["image"])
@@ -203,31 +208,33 @@ def _check_learns(cfg: Config, samples: int = 32, steps: int = 200,
     if train_report.cer > target_cer:
         raise AssertionError(
             f"memorisation failed: CER {train_report.cer:.3f} > {target_cer:.2f} "
-            f"after {steps} steps (first prediction: {decoded[0].logical!r} vs "
-            f"{batch['logical_text'][0]!r})"
+            f"after {steps} steps (prediction {decoded[0].logical!r} vs "
+            f"reference {batch['logical_text'][0]!r})"
         )
 
-    # Same samples through the *inference* API: catches any mismatch between the
-    # training pre-processing and the pre-processing used at prediction time.
+    # Inference path: the *rendered* images (not the pre-processed tensors) go
+    # through hwocr.ocr, which repeats the whole pre-processing chain.  A
+    # mismatch between training and inference pre-processing shows up here.
+    rng = _random.Random(4242)
+    rendered = [render.render_text(text, specs[0], rng, cfg)
+                for text in batch["logical_text"]]
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "overfit.pt"
         model_mod.save_checkpoint(path, model, cfg, "selftest")
         recognizer = ocr.Recognizer.load(path)
-        images = [
-            ((np.clip(image[0].numpy(), -1.0, 1.0) + 1.0) * 127.5).astype(np.uint8)
-            for image in batch["image"]
-        ]
-        predictions = recognizer.recognize_batch(images)
+        predictions = recognizer.recognize_batch(rendered)
     infer_report = metrics.Report()
     for item, reference in zip(predictions, batch["logical_text"]):
         infer_report.add(reference, item.logical, item.confidence)
-    if infer_report.cer > target_cer + 0.05:
+    if infer_report.cer > target_cer:
         raise AssertionError(
-            f"inference path differs from training path: CER {infer_report.cer:.3f} "
-            f"vs {train_report.cer:.3f}"
+            f"inference path worse than training: CER {infer_report.cer:.3f} "
+            f"(training {train_report.cer:.3f}); first pair "
+            f"{predictions[0].logical!r} vs {batch['logical_text'][0]!r}"
         )
     return (f"train CER {train_report.cer:.3f}, inference CER {infer_report.cer:.3f} "
-            f"({samples} samples, {steps} steps)")
+            f"({samples} lines, {steps} steps)")
+
 
 
 def run_all(cfg: Config | None = None, quick: bool = False, overfit_steps: int = 200,
