@@ -35,7 +35,8 @@ class Config:
     # ambiguous for a recogniser.  This is the probability of keeping the
     # font's own spacing; otherwise letters are pushed apart by min_letter_gap.
     p_natural_spacing: float = 0.35
-    min_letter_gap: float = 1.5   # px between the ink of two letters    min_words: int = 1
+    min_letter_gap: float = 1.5   # px between the ink of two letters
+    min_words: int = 1
     max_words: int = 4
     min_word_len: int = 2
     max_word_len: int = 12
@@ -57,22 +58,22 @@ class Config:
     # ---- training -------------------------------------------------------
     seed: int = 1234
     batch_size: int = 24
-    lr: float = 2e-3
+    lr: float = 1e-3
     min_lr: float = 1e-4
     # Four stages with a length curriculum.  CTC learns short sequences much
     # faster, so the model first sees single short words with clean renderings
     # (that is where the letter shapes are learned), then longer texts, then
     # heavier augmentations.
     steps_short: int = 200        # 1 word, <= 6 characters, no augmentation
-    steps_medium: int = 250       # <= 2 words, <= 8 characters, no augmentation
-    steps_light: int = 450        # full lengths, mild augmentations
-    steps_heavy: int = 300        # full lengths, photo-like augmentations
+    steps_medium: int = 400       # <= 2 words, <= 8 characters, no augmentation
+    steps_light: int = 1000       # full lengths, mild augmentations
+    steps_heavy: int = 600        # full lengths, photo-like augmentations
     steps_short_max_words: int = 1
     steps_short_max_word_len: int = 6
     steps_medium_max_words: int = 2
     steps_medium_max_word_len: int = 8
-    warmup_steps: int = 50
-    val_every: int = 100
+    warmup_steps: int = 150
+    val_every: int = 200
     val_samples: int = 200
     log_every: int = 25
     grad_clip: float = 5.0

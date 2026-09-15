@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 from .config import DEFAULT_CHECKPOINT, DATA_DIR, RUNS_DIR, Config
+from . import pretrain as pretrain_mod
 
 
 def _build_config(args: argparse.Namespace) -> Config:
@@ -101,9 +102,26 @@ def cmd_train(args: argparse.Namespace) -> int:
         include_system=args.include_system_fonts,
         words=words,
         log_path=args.log or (RUNS_DIR / "train_log.csv"),
+        init_from=args.init_from,
     )
     print(f"[cli] best: {result['best']['report']} at step {result['best']['step']}")
     print(f"[cli] next: python -m hwocr.cli eval --checkpoint {result['checkpoint']}")
+    return 0
+
+
+def cmd_pretrain(args: argparse.Namespace) -> int:
+    from . import fonts, pretrain
+
+    cfg = _build_config(args)
+    specs = fonts.resolve_fonts(cfg, extra_fonts=args.font or [],
+                               extra_dirs=args.font_dir or [],
+                               include_system=args.include_system_fonts)
+    result = pretrain.train_letters(cfg, specs, steps=args.steps,
+                                    batch_size=args.batch_size or 32,
+                                    lr=args.lr, out_path=args.out,
+                                    val_every=args.val_every)
+    print(f"[cli] letter accuracy {result['accuracy']:.4f} -> {result['path']}")
+    print(f"[cli] next: python -m hwocr.cli train --init-from {result['path']}")
     return 0
 
 
@@ -370,7 +388,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_tuning_args(p)
     p.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))
     p.add_argument("--log", help="CSV log path (default: runs/train_log.csv)")
+    p.add_argument("--init-from", help="warm start from a 'pretrain' checkpoint")
     p.set_defaults(func=cmd_train)
+
+    p = sub.add_parser("pretrain", help="warm start: train the CNN on isolated letters")
+    _add_font_args(p)
+    _add_tuning_args(p)
+    p.add_argument("--out", default=str(pretrain_mod.DEFAULT_PRETRAINED))
+    p.add_argument("--steps", type=int, default=800)
+    p.add_argument("--lr", type=float, default=2e-3)
+    p.set_defaults(func=cmd_pretrain)
 
     p = sub.add_parser("eval", help="evaluate a checkpoint on exported splits")
     p.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT))

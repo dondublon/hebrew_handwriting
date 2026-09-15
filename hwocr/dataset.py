@@ -183,10 +183,13 @@ def ctc_input_lengths(valid_widths: torch.Tensor, width_reduction: int, max_t: i
     return lengths.clamp(min=1, max=max_t).to(torch.long)
 
 
-def _worker_init(worker_id: int) -> None:
+def worker_init(worker_id: int) -> None:
     # Data generation is CPU heavy; keep OpenCV single threaded inside workers.
     cv2.setNumThreads(0)
     np.random.seed(torch.initial_seed() % (2 ** 32))
+
+
+_worker_init = worker_init  # backwards compatible alias
 
 
 class BucketedBatchSampler(Sampler[list[int]]):

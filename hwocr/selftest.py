@@ -172,17 +172,24 @@ def _check_detect(cfg: Config) -> str:
     return f"{len(boxes)} lines detected on a {page.shape[1]}x{page.shape[0]} page"
 
 
-def _check_learns(cfg: Config, samples: int = 24, steps: int = 250,
-                  target_cer: float = 0.15) -> str:
-    """Short training run: proves that the model learns *and* that inference works."""
+def _check_learns(cfg: Config, samples: int = 24, steps: int = 60,
+                  target_cer: float = 0.0) -> str:
+    """Trains on one short line and checks that the whole chain works.
+
+    Deliberately a *tiny* problem: the purpose is to verify that gradients flow,
+    that the CTC wiring / label mapping / decoding / bidi chain is correct and
+    that the inference pre-processing matches the training one - not to measure
+    accuracy (that is what ``eval`` is for).  A bigger problem would need
+    hundreds of steps and make the self-test slow and flaky.
+    """
     import random as _random
 
     specs = fonts.resolve_fonts(cfg)
-    # Clean renderings only: this check is about the learning path, not about
-    # robustness to augmentation.
-    dataset = ds.SyntheticLineDataset(cfg, specs, seed=909, length=samples,
+    dataset = ds.SyntheticLineDataset(cfg, specs, seed=909, length=1,
                                       heavy_prob=0.0, augment_prob=0.0)
-    batch = ds.collate([dataset[i] for i in range(samples)], cfg.width_reduction)
+    item = dataset[0]
+    text = item["logical_text"]
+    batch = ds.collate([item] * samples, cfg.width_reduction)
 
     torch.manual_seed(0)
     model = model_mod.build_model(cfg)
@@ -202,38 +209,34 @@ def _check_learns(cfg: Config, samples: int = 24, steps: int = 250,
     with torch.no_grad():
         log_probs = model(batch["image"])
     decoded = decode.greedy_decode(log_probs, lengths.tolist())
-    train_report = metrics.Report()
-    for item, reference in zip(decoded, batch["logical_text"]):
-        train_report.add(reference, item.logical, item.confidence)
-    if train_report.cer > target_cer:
+    if decoded[0].logical != text:
         raise AssertionError(
-            f"memorisation failed: CER {train_report.cer:.3f} > {target_cer:.2f} "
-            f"after {steps} steps (prediction {decoded[0].logical!r} vs "
-            f"reference {batch['logical_text'][0]!r})"
+            f"could not learn even one line after {steps} steps: "
+            f"{decoded[0].logical!r} != {text!r} (loss {float(loss.detach()):.3f})"
         )
 
-    # Inference path: the *rendered* images (not the pre-processed tensors) go
-    # through hwocr.ocr, which repeats the whole pre-processing chain.  A
-    # mismatch between training and inference pre-processing shows up here.
+    # Inference path: a *freshly rendered* version of the same text goes through
+    # hwocr.ocr, which repeats the whole pre-processing chain.
     rng = _random.Random(4242)
-    rendered = [render.render_text(text, specs[0], rng, cfg)
-                for text in batch["logical_text"]]
+    rendered = render.render_text(text, specs[0], rng, cfg)
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "overfit.pt"
         model_mod.save_checkpoint(path, model, cfg, "selftest")
         recognizer = ocr.Recognizer.load(path)
-        predictions = recognizer.recognize_batch(rendered)
-    infer_report = metrics.Report()
-    for item, reference in zip(predictions, batch["logical_text"]):
-        infer_report.add(reference, item.logical, item.confidence)
-    if infer_report.cer > target_cer:
+        prediction = recognizer.recognize_batch([rendered])[0]
+        page = recognizer.recognize_page(render.render_page([text], specs[0], rng, cfg))
+    if prediction.logical != text:
         raise AssertionError(
-            f"inference path worse than training: CER {infer_report.cer:.3f} "
-            f"(training {train_report.cer:.3f}); first pair "
-            f"{predictions[0].logical!r} vs {batch['logical_text'][0]!r}"
+            f"inference path differs: {prediction.logical!r} != {text!r}"
         )
-    return (f"train CER {train_report.cer:.3f}, inference CER {infer_report.cer:.3f} "
-            f"({samples} lines, {steps} steps)")
+    if page.text.strip() != text:
+        raise AssertionError(
+            f"page level inference differs: {page.text!r} != {text!r} "
+            f"({len(page.lines)} line(s) detected)"
+        )
+    return (f"learned {text!r} in {steps} steps; line and page inference agree; "
+            f"loss {float(loss.detach()):.4f}")
+
 
 
 

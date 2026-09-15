@@ -10,26 +10,32 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 PY=${PY:-python3}
 CHECKPOINT=${CHECKPOINT:-models/crnn_gveret.pt}
-STEPS_PLAIN=${STEPS_PLAIN:-250}
-STEPS_LIGHT=${STEPS_LIGHT:-400}
-STEPS_HEAVY=${STEPS_HEAVY:-300}
+LETTER_CHECKPOINT=${LETTER_CHECKPOINT:-models/letters_pretrained.pt}
+STEPS_SHORT=${STEPS_SHORT:-400}
+STEPS_MEDIUM=${STEPS_MEDIUM:-500}
+STEPS_LIGHT=${STEPS_LIGHT:-1500}
+STEPS_HEAVY=${STEPS_HEAVY:-1000}
 
-echo "== 1/5 self-test =============================================="
+echo "== 1/6 self-test =============================================="
 $PY -m hwocr.cli selftest --quick
 
-echo "== 2/5 font registry =========================================="
+echo "== 2/6 font registry =========================================="
 $PY -m hwocr.cli list-fonts
 
-echo "== 3/5 export synthetic datasets =============================="
-$PY -m hwocr.cli generate
+echo "== 3/6 export synthetic datasets =============================="
+$PY -m hwocr.cli generate --pango 200
 
 if [ "${SKIP_TRAIN:-0}" != "1" ]; then
-  echo "== 4/5 train ================================================"
-  $PY -m hwocr.cli train --checkpoint "$CHECKPOINT" \
-      --steps-plain "$STEPS_PLAIN" --steps-light "$STEPS_LIGHT" --steps-heavy "$STEPS_HEAVY"
+  echo "== 4/6 warm start on isolated letters ========================="
+  $PY -m hwocr.cli pretrain --out "$LETTER_CHECKPOINT"
+
+  echo "== 5/6 train the full recogniser (CTC) ========================"
+  $PY -m hwocr.cli train --checkpoint "$CHECKPOINT" --init-from "$LETTER_CHECKPOINT" \
+      --steps-short "$STEPS_SHORT" --steps-medium "$STEPS_MEDIUM" \
+      --steps-light "$STEPS_LIGHT" --steps-heavy "$STEPS_HEAVY"
 fi
 
-echo "== 5/5 evaluation ============================================="
+echo "== 6/6 evaluation ============================================="
 $PY -m hwocr.cli eval --checkpoint "$CHECKPOINT" --save-errors 20 \
     --errors-dir runs/errors
 

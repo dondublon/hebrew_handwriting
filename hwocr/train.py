@@ -76,9 +76,15 @@ def train(
     include_system: bool = False,
     words: Sequence[str] | None = None,
     log_path: str | Path | None = None,
+    init_from: str | Path | None = None,
     quiet: bool = False,
 ) -> dict[str, Any]:
-    """Train a recogniser; returns a dict with the training history."""
+    """Train the recogniser; returns a dict with the training history.
+
+    ``init_from`` warm-starts the network from a checkpoint produced by
+    :mod:`hwocr.pretrain` (letter classification) - strongly recommended, see
+    that module for why.
+    """
     cfg = cfg or Config()
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
@@ -94,6 +100,15 @@ def train(
     val_loader = ds.make_loader(val_set, cfg, shuffle=False, workers=0)
 
     model = model_mod.build_model(cfg).to(device)
+    if init_from:
+        blob = torch.load(str(init_from), map_location=device, weights_only=False)
+        state = blob.get("state_dict", blob)
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        if not quiet:
+            print(f"[train] warm start from {init_from} "
+                  f"(missing={len(missing)}, unexpected={len(unexpected)}, "
+                  f"letter accuracy={max((e['val_accuracy'] for e in blob.get('history', [])), default=0):.3f})",
+                  flush=True)
     if not quiet:
         print(f"[train] parameters: {model_mod.count_parameters(model)/1e6:.2f}M, "
               f"classes: {charset.num_classes()}, input: {cfg.img_height}x{cfg.max_width}",
