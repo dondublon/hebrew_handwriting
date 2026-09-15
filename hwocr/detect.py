@@ -44,15 +44,12 @@ class LineBox:
 
 
 def binarize(gray: np.ndarray) -> np.ndarray:
-    """Ink -> 255, background -> 0 (works for both polarities)."""
-    gray = augment.ensure_gray(gray)
-    if float(gray.mean()) < 127:  # light text on dark background
-        gray = 255 - gray
-    blur = cv2.GaussianBlur(gray, (3, 3), 0)
-    binary = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY_INV, 31, 12)
-    otsu = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
-    return cv2.bitwise_or(binary, otsu)
+    """Ink -> 255, background -> 0 (works for both polarities).
+
+    Thin wrapper around :func:`hwocr.augment.ink_mask` so that layout analysis
+    and model pre-processing agree on what "ink" means.
+    """
+    return augment.ink_mask(gray)
 
 
 def estimate_skew(binary: np.ndarray, max_angle: float = 8.0) -> float:

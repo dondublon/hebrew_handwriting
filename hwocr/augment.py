@@ -32,6 +32,68 @@ def _np_rng(rng: random.Random) -> np.random.Generator:
     return np.random.default_rng(rng.getrandbits(32))
 
 
+def _filter_components(mask: np.ndarray, min_area: int = 3, min_side: int = 2,
+                       min_area_frac: float = 0.0004) -> np.ndarray:
+    """Keep only components that look like letters (not dust or thin lines)."""
+    threshold = max(min_area, int(min_area_frac * mask.size))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if count <= 1:
+        return mask
+    keep = [
+        i for i in range(1, count)
+        if stats[i, cv2.CC_STAT_AREA] >= threshold
+        and min(stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]) >= min_side
+    ]
+    if not keep:
+        return np.zeros_like(mask)
+    return np.where(np.isin(labels, keep), 255, 0).astype(np.uint8)
+
+
+def ink_mask(img: np.ndarray, min_area: int = 3, min_side: int = 2,
+             min_contrast: int = 40) -> np.ndarray:
+    """Binary mask of the ink (255 = ink).
+
+    Uses a local median as an estimate of the paper (robust against shadows and
+    gradients) and keeps pixels that are darker than it by ``min_contrast``.
+    Components that are too small or too thin (dust, scratches, fold lines) are
+    dropped, which is essential for a tight crop: otherwise the crop of a
+    stressed sample covers the whole frame, the resulting image becomes much
+    wider than its label and the CTC loss degenerates.
+
+    Falls back to adaptive + Otsu thresholding when the contrast rule finds
+    nothing (very low contrast scans).
+    """
+    gray = ensure_gray(img)
+    if float(gray.mean()) < 127:  # light text on dark background
+        gray = 255 - gray
+    height, width = gray.shape[:2]
+    ksize = max(9, (min(height, width) // 2) | 1)
+    ksize = min(51, ksize)
+    if ksize % 2 == 0:
+        ksize += 1
+    if ksize >= 3 and ksize <= min(height, width):
+        background = cv2.medianBlur(gray, ksize)
+    else:
+        background = cv2.GaussianBlur(gray, (3, 3), 0)
+    diff = cv2.subtract(background, gray)
+    strong = np.where(diff >= min_contrast, 255, 0).astype(np.uint8)
+    mask = _filter_components(strong, min_area, min_side)
+    if mask.any():
+        return mask
+
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    block = max(15, (min(height, width) // 3) | 1)
+    if block % 2 == 0:
+        block += 1
+    if block <= min(height, width):
+        adaptive = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                         cv2.THRESH_BINARY_INV, block, 12)
+    else:
+        adaptive = np.zeros_like(gray)
+    otsu = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+    return _filter_components(cv2.bitwise_or(adaptive, otsu), min_area, min_side)
+
+
 def ensure_gray(img: np.ndarray) -> np.ndarray:
     """Convert any input image to uint8 grayscale with dark ink on light paper."""
     if img.ndim == 3:
@@ -264,7 +326,7 @@ def apply_heavy(img: np.ndarray, rng: random.Random) -> np.ndarray:
         img = random_contrast(img, rng)
     if rng.random() < 0.35:
         img = ink_thickness(img, rng)
-    if rng.random() < 0.12:  # dark mode screenshots etc.
+    if rng.random() < 0.06:  # scanned negative / dark mode screenshot
         img = invert(img)
     if rng.random() < 0.60:
         img = jpeg_artifacts(img, rng)
@@ -278,22 +340,27 @@ def apply_augment(img: np.ndarray, rng: random.Random, heavy: bool = False) -> n
 # ---------------------------------------------------------------------------
 # model input
 # ---------------------------------------------------------------------------
-def crop_ink(img: np.ndarray, margin: int = 2, threshold: int = 200) -> np.ndarray:
+def crop_ink(img: np.ndarray, margin: int = 2) -> np.ndarray:
     """Crop to the ink bounding box (keeps a small white margin).
 
-    Falls back to a plain border-crop when the image is inverted
-    (light ink on dark background).
+    Uses :func:`ink_mask`, so shaded backgrounds and inverted images are
+    handled correctly.  Falls back to the whole image when no ink is found.
     """
-    binary = (img < threshold).astype(np.uint8)
-    if binary.sum() < 4:
-        binary = (img > threshold).astype(np.uint8)
-    rows = np.where(binary.any(axis=1))[0]
-    cols = np.where(binary.any(axis=0))[0]
+    gray = ensure_gray(img)
+    mask = ink_mask(gray)
+    rows = np.where(mask.any(axis=1))[0]
+    cols = np.where(mask.any(axis=0))[0]
     if rows.size == 0 or cols.size == 0:
-        return img
-    y0, y1 = max(0, rows[0] - margin), min(img.shape[0], rows[-1] + 1 + margin)
-    x0, x1 = max(0, cols[0] - margin), min(img.shape[1], cols[-1] + 1 + margin)
-    return img[y0:y1, x0:x1]
+        return gray
+    y0, y1 = max(0, int(rows[0]) - margin), min(gray.shape[0], int(rows[-1]) + 1 + margin)
+    x0, x1 = max(0, int(cols[0]) - margin), min(gray.shape[1], int(cols[-1]) + 1 + margin)
+    return gray[y0:y1, x0:x1]
+
+
+def normalize_polarity(img: np.ndarray) -> np.ndarray:
+    """Make sure the ink is dark: light text on a dark background is inverted."""
+    gray = ensure_gray(img)
+    return 255 - gray if float(gray.mean()) < 127 else gray
 
 
 def prepare_for_model(
@@ -303,7 +370,8 @@ def prepare_for_model(
     min_width: int = 16,
 ) -> tuple[np.ndarray, int]:
     """Crop, scale to ``height`` and pad; returns (uint8 image, valid width px)."""
-    cropped = crop_ink(ensure_gray(img))
+    gray = normalize_polarity(img)
+    cropped = crop_ink(gray)
     h, w = cropped.shape[:2]
     scale = height / float(h)
     if w * scale > max_width:
