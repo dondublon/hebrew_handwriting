@@ -194,7 +194,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
     from . import augment, dataset as ds, fonts, metrics, ocr, render
 
-    recognizer = ocr.Recognizer.load(args.checkpoint)
+    recognizer = ocr.Recognizer.load(args.checkpoint, lexicon_decode=args.lexicon_decode)
     cfg = recognizer.cfg
     specs = fonts.resolve_fonts(cfg, extra_fonts=args.font or [],
                                extra_dirs=args.font_dir or [],
@@ -279,7 +279,7 @@ def _annotate(image, page) -> "object":
 def cmd_recognize(args: argparse.Namespace) -> int:
     from . import ocr
 
-    recognizer = ocr.Recognizer.load(args.checkpoint)
+    recognizer = ocr.Recognizer.load(args.checkpoint, lexicon_decode=args.lexicon_decode)
     page = recognizer.recognize_page(args.image, segment=not args.no_segment)
     if args.json:
         print(json.dumps(page.as_dict(), ensure_ascii=False, indent=2))
@@ -436,6 +436,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--out", help="save the rendered image here")
     p.add_argument("--no-segment", action="store_true", help="treat the image as one line")
+    p.add_argument("--lexicon-decode", action="store_true",
+                   help="correct recognised words with the built-in word list")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_demo)
 
@@ -445,6 +447,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-segment", action="store_true")
     p.add_argument("--json", action="store_true")
     p.add_argument("--out-image", help="save an annotated copy of the input")
+    p.add_argument("--lexicon-decode", action="store_true",
+                   help="correct recognised words with the built-in word list")
     p.set_defaults(func=cmd_recognize)
 
     p = sub.add_parser("baseline", help="compare with Tesseract on the same data")
