@@ -8,5 +8,6 @@ venv/
 data/
 models/
 runs/
+tmp/
 *.pt
 *.log
