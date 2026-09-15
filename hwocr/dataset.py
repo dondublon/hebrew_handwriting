@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import random
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Iterator, Sequence
 
 import cv2
 import numpy as np
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 
 from . import augment, bidi, charset, fonts, lexicon, render
 from .config import Config
@@ -67,6 +67,18 @@ class SyntheticLineDataset(Dataset):
         text = lexicon.sample_text(rng, self.cfg, allowed, words)
         return text, bidi.logical_to_visual(text), spec
 
+    def length_key(self, index: int) -> int:
+        """Cheap estimate of the image width - used to bucket samples into batches.
+
+        Generating only the text (no rendering, no augmentation) costs a
+        fraction of a millisecond, and grouping similar lengths together cuts
+        the amount of white padding in a batch dramatically.
+        """
+        rng = random.Random(self.seed * 1_000_003 + int(index))
+        _, visual, _ = self.sample_text(rng)
+        return len(visual)
+
+
     def __getitem__(self, index: int) -> dict:
         rng = random.Random(self.seed * 1_000_003 + int(index))
         _, visual, spec = self.sample_text(rng)
@@ -103,6 +115,9 @@ class OnDiskDataset(Dataset):
             if len(parts) < 3:
                 continue
             self.entries.append((self.root / parts[0], parts[1], parts[2]))
+
+    def length_key(self, index: int) -> int:
+        return int(self.entries[index][1].__len__())
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -160,16 +175,90 @@ def _worker_init(worker_id: int) -> None:
     np.random.seed(torch.initial_seed() % (2 ** 32))
 
 
-def make_loader(dataset: Dataset, cfg: Config, shuffle: bool, workers: int | None = None) -> DataLoader:
+class BucketedBatchSampler(Sampler[list[int]]):
+    """Batches of similar text length, to minimise padding inside a batch.
+
+    A random window of indices is drawn, sorted by the (cheap) length key and
+    cut into batches; the batches themselves are then shuffled.  On the
+    synthetic dataset this removes roughly half of the wasted computation
+    compared to completely random batches.
+    """
+
+    def __init__(
+        self,
+        key_fn: Callable[[int], int],
+        total: int,
+        batch_size: int,
+        seed: int = 0,
+        window: int | None = None,
+        indices: Sequence[int] | None = None,
+        shuffle: bool = True,
+    ) -> None:
+        self.key_fn = key_fn
+        self.batch_size = int(batch_size)
+        self.seed = int(seed)
+        self.epoch = 0
+        self.shuffle = shuffle
+        self.indices = list(indices) if indices is not None else None
+        self.total = len(self.indices) if self.indices is not None else int(total)
+        self.window = int(window or self.batch_size * 16)
+
+    def __len__(self) -> int:
+        windows = max(1, int(np.ceil(self.total / self.window)))
+        return windows * max(1, self.window // self.batch_size)
+
+    def __iter__(self) -> Iterator[list[int]]:
+        rng = random.Random(self.seed * 7919 + self.epoch)
+        self.epoch += 1
+        remaining = self.total
+        while remaining > 0:
+            size = min(self.window, remaining)
+            remaining -= size
+            if self.indices is not None:
+                start = self.total - remaining - size
+                window = self.indices[start:start + size]
+            else:
+                window = [rng.randrange(self.total) for _ in range(size)]
+            if self.shuffle:
+                rng.shuffle(window)
+            keyed = sorted(window, key=self.key_fn)
+            batches = [keyed[i:i + self.batch_size] for i in range(0, len(keyed), self.batch_size)]
+            batches = [b for b in batches if len(b) == self.batch_size]
+            if self.shuffle:
+                rng.shuffle(batches)
+            yield from batches
+
+
+def make_loader(
+    dataset: Dataset,
+    cfg: Config,
+    shuffle: bool,
+    workers: int | None = None,
+    bucketed: bool = True,
+) -> DataLoader:
+    """DataLoader with the project's collate/bucketing defaults."""
     workers = cfg.workers if workers is None else workers
+    common = {
+        "num_workers": workers,
+        "collate_fn": lambda batch: collate(batch, cfg.width_reduction),
+        "worker_init_fn": _worker_init,
+    }
+    if bucketed and hasattr(dataset, "length_key"):
+        sampler = BucketedBatchSampler(
+            key_fn=dataset.length_key,
+            total=len(dataset),
+            batch_size=cfg.batch_size,
+            seed=cfg.seed,
+            shuffle=shuffle,
+            indices=None if shuffle else range(len(dataset)),
+        )
+        return DataLoader(dataset, batch_sampler=sampler, **common)
     return DataLoader(
         dataset,
         batch_size=cfg.batch_size,
         shuffle=shuffle,
-        num_workers=workers,
-        collate_fn=lambda batch: collate(batch, cfg.width_reduction),
-        worker_init_fn=_worker_init,
         drop_last=shuffle,
-        persistent_workers=False,
+        **common,
     )
+
 

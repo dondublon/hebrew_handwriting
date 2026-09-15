@@ -29,6 +29,7 @@ class Config:
     max_width: int = 512          # hard cap for the model input width (px)
     font_size: int = 64           # render font size before normalisation
     target_body: float = 20.0     # median letter ink height in the input (px)
+    line_scale_jitter: float = 0.07  # per-line size variation (±7%)
     min_words: int = 1
     max_words: int = 4
     min_word_len: int = 2
@@ -39,7 +40,10 @@ class Config:
 
     # ---- model ----------------------------------------------------------
     cnn_channels: tuple[int, ...] = (32, 32, 64, 64, 128, 128, 128)
-    pool_after: tuple[int, ...] = (0, 2, 4)   # width reduction = 2**3 = 8
+    # Width reduction of 4 (two pooling layers) is deliberate: this
+    # handwriting font is narrow, so a reduction of 8 leaves only ~2 CTC frames
+    # per letter, which is not enough for CTC (it needs 2 frames + a blank).
+    pool_after: tuple[int, ...] = (0, 2)
     rnn_hidden: int = 192
     rnn_layers: int = 2
     dropout: float = 0.1
@@ -50,7 +54,7 @@ class Config:
     lr: float = 3e-4
     min_lr: float = 3e-5
     steps_light: int = 600        # stage 1: mild augmentations
-    steps_heavy: int = 400        # stage 2: photo-like augmentations
+    steps_heavy: int = 300        # stage 2: photo-like augmentations
     warmup_steps: int = 50
     val_every: int = 100
     val_samples: int = 200

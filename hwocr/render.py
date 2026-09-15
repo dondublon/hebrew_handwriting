@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Sequence
 
 import numpy as np
 from PIL import Image, ImageDraw
 
-from . import bidi, fonts
+from . import bidi, charset, fonts
 from .config import Config
 
 TILE_PAD = 8
@@ -68,12 +69,7 @@ def _transform_tile(tile: Image.Image, rng: random.Random, style: RenderStyle,
 
 
 def measure_body_height(font, text: str) -> float:
-    """Median ink height of the letters of ``text`` (used for normalisation).
-
-    Normalising by the *median letter height* instead of the font size makes
-    the pipeline independent of the metrics of a particular font, which is
-    what allows other fonts to be added later without touching the model.
-    """
+    """Median ink height of the letters of ``text`` (debug helper)."""
     heights = []
     for ch in text:
         if ch == " ":
@@ -81,6 +77,27 @@ def measure_body_height(font, text: str) -> float:
         bbox = font.getbbox(ch)
         heights.append(max(1, bbox[3] - bbox[1]))
     return float(np.median(heights)) if heights else 1.0
+
+
+@lru_cache(maxsize=64)
+def font_body_height(path: str, size: int) -> float:
+    """Median ink height of the Hebrew alphabet at a given font size.
+
+    The normalisation factor is calibrated *per font*, not per rendered line:
+    a per-line median depends on which letters happen to be in the string
+    (tall letters such as ל raise the median, flat ones such as ם lower it),
+    which made the width of a line vary by ~40% for the same number of
+    characters.  A per-font calibration keeps the letter size consistent, and
+    makes the image width predictable from the text length (used for batch
+    bucketing).
+    """
+    font = fonts.load_pil_font(path, size)
+    heights = []
+    for ch in charset.HEBREW_LETTERS:
+        bbox = font.getbbox(ch)
+        heights.append(max(1, bbox[3] - bbox[1]))
+    return float(np.median(heights)) if heights else 1.0
+
 
 
 def render_line(
@@ -95,8 +112,11 @@ def render_line(
     font = fonts.load_pil_font(spec.path, cfg.font_size)
     ascent, descent = font.getmetrics()
 
-    body = measure_body_height(font, text_visual)
+    body = font_body_height(str(spec.path), cfg.font_size)
+    # Per-line size jitter keeps the samples varied while the calibration
+    # itself stays font specific.
     norm = cfg.target_body / body if body > 0 else 1.0
+    norm *= 1.0 + rng.uniform(-cfg.line_scale_jitter, cfg.line_scale_jitter)
 
     margin = 12
     canvas = Image.new(
