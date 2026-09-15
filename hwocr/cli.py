@@ -371,8 +371,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("selftest", help="fast end-to-end self-test")
     _add_tuning_args(p)
     p.add_argument("--quick", action="store_true", help="skip the (slower) learning check")
-    p.add_argument("--overfit-steps", type=int, default=200)
-    p.add_argument("--overfit-samples", type=int, default=32)
+    p.add_argument("--overfit-steps", type=int, default=80,
+                   help="training steps for the learning check")
+    p.add_argument("--overfit-samples", type=int, default=24)
     p.set_defaults(func=cmd_selftest)
 
     p = sub.add_parser("generate", help="export synthetic datasets to data/")

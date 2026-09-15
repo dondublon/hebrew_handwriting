@@ -183,7 +183,7 @@ python3 -m hwocr.cli eval --checkpoint models/crnn_gveret.pt \
 ## Самопроверка
 
 ```bash
-python3 -m hwocr.cli selftest           # ~4 мин
+python3 -m hwocr.cli selftest           # ~1–3 мин
 python3 -m hwocr.cli selftest --quick   # без проверки обучения, ~5 с
 ```
 

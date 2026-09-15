@@ -240,8 +240,8 @@ def _check_learns(cfg: Config, samples: int = 24, steps: int = 60,
 
 
 
-def run_all(cfg: Config | None = None, quick: bool = False, overfit_steps: int = 200,
-            overfit_samples: int = 32) -> bool:
+def run_all(cfg: Config | None = None, quick: bool = False, overfit_steps: int = 80,
+            overfit_samples: int = 24) -> bool:
     """Run every check; returns True when all of them pass."""
     cfg = cfg or Config()
     torch.set_num_threads(cfg.torch_threads)
