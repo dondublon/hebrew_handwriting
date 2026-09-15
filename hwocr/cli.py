@@ -183,6 +183,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
 
 def cmd_demo(args: argparse.Namespace) -> int:
     """Render Hebrew text with a registered font and recognise it again."""
+    import random
+
     from . import augment, dataset as ds, fonts, metrics, ocr, render
 
     recognizer = ocr.Recognizer.load(args.checkpoint)

@@ -26,16 +26,19 @@ Tesseract 5.2 с моделью `heb` на этом шрифте не работ
 ## Быстрый старт
 
 ```bash
-# 1. самопроверка всего пайплайна (≤4 мин, без обучения на большом объёме)
+# 1. самопроверка всего пайплайна (≤2 мин, без длинного обучения)
 python3 -m hwocr.cli selftest
 
-# 2. сгенерировать синтетические датасеты в data/
-python3 -m hwocr.cli generate
+# 2. сгенерировать синтетические датасеты в data/ (плюс сплиты, отрисованные Pango)
+python3 -m hwocr.cli generate --pango 200
 
-# 3. обучить модель (~15–20 мин на 6 ядрах CPU)
-python3 -m hwocr.cli train
+# 3a. warm start: та же сеть учится различать отдельные буквы (~5 мин)
+python3 -m hwocr.cli pretrain
 
-# 4. метрики на отложенных выборках (clean / photo-like)
+# 3b. обучение распознавателя (CTC) от warm start (~15–20 мин на 6 ядрах CPU)
+python3 -m hwocr.cli train --init-from models/letters_pretrained.pt
+
+# 4. метрики на отложенных выборках (clean / photo-like / Pango / другой шрифт)
 python3 -m hwocr.cli eval
 
 # 5. сравнение с Tesseract на тех же картинках
@@ -171,15 +174,17 @@ CTC‑осуществимость синтетических сэмплов, ф
 fonts/                        шрифт(ы): Gveret Levin + любые добавленные
 hwocr/
   charset.py   алфавит, кодирование меток            bidi.py      visual <-> logical
-  config.py    все параметры (сериализуются в чекпойнт)            fonts.py      реестр шрифтов
-  lexicon.py   словарь иврита + генератор псевдослов               render.py     отрисовка строки
-  augment.py   маска чернил, кроп, light/heavy аугментации         dataset.py    датасет, бакетинг
+  config.py    все параметры (сериализуются в чекпойнт)            fonts.py      реестр шрифтов (+GPOS-кернинг)
+  lexicon.py   словарь иврита + генератор псевдослов               render.py     отрисовка строки (геометрия в font units)
+  render_pango.py  отрисовка через Pango/HarfBuzz (независимый тест)  letters.py  датасет отдельных букв
+  augment.py   маска чернил, кроп, light/heavy аугментации         dataset.py    датасет, бакетинг по длине
   model.py     CRNN+CTC, чекпойнты                                  decode.py     жадный CTC-декод
   detect.py    deskew + сегментация строк                           ocr.py        API инференса
-  train.py     обучение (2 стадии аугментации)                      generate.py   экспорт датасетов
-  evaluate.py  метрики и разбор ошибок         baseline_tesseract.py сравнение с Tesseract
-  metrics.py   CER/WER                          selftest.py      автопроверки
-  webapp.py    веб-UI (stdlib)                  cli.py           командный интерфейс
+  pretrain.py  warm start: классификатор букв                       train.py      CTC-обучение (curriculum, 4 стадии)
+  generate.py  экспорт датасетов                 evaluate.py        метрики и разбор ошибок
+  baseline_tesseract.py сравнение с Tesseract     metrics.py        CER/WER
+  selftest.py  автопроверки                       webapp.py         веб-UI (stdlib)
+  cli.py       командный интерфейс
 scripts/run_poc.sh            весь пайплайн одной командой
 ```
 

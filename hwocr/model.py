@@ -133,7 +133,13 @@ def load_checkpoint(
         rnn_layers=cfg.rnn_layers,
         dropout=cfg.dropout,
     )
-    model.load_state_dict(blob["model"])
+    state = blob.get("model") or blob.get("state_dict")  # 'state_dict' = pretrain output
+    if state is None:
+        raise ValueError(
+            f"{path} does not contain recogniser weights (expected a 'model' entry; "
+            "note that 'pretrain' checkpoints must be passed to 'train --init-from')"
+        )
+    model.load_state_dict(state)
     model.to(device)
     model.eval()
     meta = {k: v for k, v in blob.items() if k not in {"model"}}
