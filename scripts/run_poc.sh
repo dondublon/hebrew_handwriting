@@ -11,10 +11,10 @@ cd "$(dirname "$0")/.."
 PY=${PY:-python3}
 CHECKPOINT=${CHECKPOINT:-models/crnn_gveret.pt}
 LETTER_CHECKPOINT=${LETTER_CHECKPOINT:-models/letters_pretrained.pt}
-STEPS_SHORT=${STEPS_SHORT:-400}
-STEPS_MEDIUM=${STEPS_MEDIUM:-500}
-STEPS_LIGHT=${STEPS_LIGHT:-1500}
-STEPS_HEAVY=${STEPS_HEAVY:-1000}
+STEPS_SHORT=${STEPS_SHORT:-200}
+STEPS_MEDIUM=${STEPS_MEDIUM:-400}
+STEPS_LIGHT=${STEPS_LIGHT:-1000}
+STEPS_HEAVY=${STEPS_HEAVY:-600}
 
 echo "== 1/6 self-test =============================================="
 $PY -m hwocr.cli selftest --quick

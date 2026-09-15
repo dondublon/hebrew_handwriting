@@ -45,6 +45,9 @@ def _build_config(args: argparse.Namespace) -> Config:
     extra_dirs = getattr(args, "font_dir", None)
     if extra_dirs:
         cfg.font_dirs = list(cfg.font_dirs) + [str(d) for d in extra_dirs]
+    if getattr(args, "fonts_only", False):
+        # ignore the default font directory: train on exactly the fonts given
+        cfg.font_dirs = []
     return cfg
 
 
@@ -338,16 +341,21 @@ def _add_font_args(parser: argparse.ArgumentParser) -> None:
                         help="extra font file to use (repeatable)")
     parser.add_argument("--font-dir", action="append", metavar="DIR",
                         help="extra directory with fonts (repeatable)")
+    parser.add_argument("--fonts-only", action="store_true",
+                        help="use only the fonts given via --font/--font-dir "
+                             "(ignore the default fonts/ directory)")
     parser.add_argument("--include-system-fonts", action="store_true",
                         help="also scan the system font directories")
 
 
 def _add_tuning_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--batch-size", type=int)
-    parser.add_argument("--steps-plain", type=int,
-                        help="stage 1 steps (clean renderings, short texts)")
-    parser.add_argument("--steps-light", type=int, help="stage 2 steps (mild augmentations)")
-    parser.add_argument("--steps-heavy", type=int, help="stage 3 steps (photo-like)")
+    parser.add_argument("--steps-short", type=int,
+                        help="stage 1 steps (single short words, no augmentation)")
+    parser.add_argument("--steps-medium", type=int,
+                        help="stage 2 steps (short phrases, no augmentation)")
+    parser.add_argument("--steps-light", type=int, help="stage 3 steps (mild augmentations)")
+    parser.add_argument("--steps-heavy", type=int, help="stage 4 steps (photo-like)")
     parser.add_argument("--val-every", type=int)
     parser.add_argument("--val-samples", type=int)
     parser.add_argument("--lr", type=float, help="peak learning rate")
@@ -371,9 +379,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("selftest", help="fast end-to-end self-test")
     _add_tuning_args(p)
     p.add_argument("--quick", action="store_true", help="skip the (slower) learning check")
-    p.add_argument("--overfit-steps", type=int, default=80,
+    p.add_argument("--overfit-steps", type=int, default=200,
                    help="training steps for the learning check")
-    p.add_argument("--overfit-samples", type=int, default=24)
+    p.add_argument("--overfit-samples", type=int, default=16,
+                   help="batch size used by the learning check")
     p.set_defaults(func=cmd_selftest)
 
     p = sub.add_parser("generate", help="export synthetic datasets to data/")
