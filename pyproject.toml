@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.10"
 dependencies = [
+    "fonttools>=4.65.0",
     "numpy>=2.2.6",
+    "opencv-python>=5.0.0.93",
+    "pillow>=12.3.0",
     "torch>=2.14.0",
 ]
 
