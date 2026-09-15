@@ -124,29 +124,50 @@ class Recognizer:
         return self.recognize_batch([image])[0]
 
     # ------------------------------------------------------------------
-    def recognize_page(self, image: np.ndarray | str | Path, segment: bool = True) -> PageResult:
-        """Recognise a full page (line detection + recognition).
+    def recognize_page(
+        self,
+        image: np.ndarray | str | Path,
+        segment: bool = True,
+        boxes: Sequence[Sequence[int]] | None = None,
+    ) -> PageResult:
+        """Recognise a page.
 
         ``image`` may be a file path (PNG/JPEG/..., EXIF orientation is applied,
         colour images are converted to grayscale) or a numpy array.
+
+        ``boxes`` are optional explicit line boxes ``(x0, y0, x1, y1)`` in image
+        coordinates; when they are given the automatic line detection is
+        skipped.  This is what the web UI uses after the boxes have been edited
+        by hand.
         """
         if isinstance(image, (str, Path)):
             with Image.open(image) as handle:
                 handle = ImageOps.exif_transpose(handle)
                 image = np.asarray(handle.convert("L"), dtype=np.uint8)
         gray = augment.ensure_gray(image)
-        if not segment:
-            crops = [gray]
-            boxes: list[detect.LineBox | None] = [None]
-        else:
-            boxes = detect.segment_lines(gray)
-            if not boxes:
-                boxes = [detect.LineBox(0, 0, gray.shape[1], gray.shape[0])]
-            crops = [box.crop(gray) for box in boxes]
 
+        line_boxes: list[detect.LineBox | None] | None = None
+        if boxes is not None:
+            candidates = [
+                detect.LineBox(int(min(b[0], b[2])), int(min(b[1], b[3])),
+                               int(max(b[0], b[2])), int(max(b[1], b[3])))
+                for b in boxes if len(b) >= 4
+            ]
+            line_boxes = [b for b in candidates if b.width >= 2 and b.height >= 2]
+            if not line_boxes:  # nothing usable was passed - fall back to detection
+                line_boxes = None
+        if line_boxes is None:
+            if segment:
+                line_boxes = detect.segment_lines(gray)
+                if not line_boxes:
+                    line_boxes = [detect.LineBox(0, 0, gray.shape[1], gray.shape[0])]
+            else:
+                line_boxes = [None]
+
+        crops = [box.crop(gray) if box is not None else gray for box in line_boxes]
         decoded = self.recognize_batch(crops)
         lines = []
-        for item, box in zip(decoded, boxes):
+        for item, box in zip(decoded, line_boxes):
             logical = item.logical
             visual = item.visual
             if self.corrector is not None:

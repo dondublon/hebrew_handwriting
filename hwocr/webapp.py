@@ -57,6 +57,30 @@ INDEX_HTML = """<!DOCTYPE html>
   .row { display: flex; gap: 10px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
   .err { color: #b3261e; }
   code { background: #eef1f6; padding: 1px 5px; border-radius: 4px; }
+  /* --- редактор рамок -------------------------------------------------- */
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  button.ghost { background: #e7ebf3; color: #26354d; }
+  button.danger { background: #c62828; }
+  button.active { outline: 2px solid #2f5bd4; outline-offset: 1px; }
+  .editor { position: relative; margin-top: 12px; line-height: 0; user-select: none;
+            touch-action: none; border: 1px solid #dde3ec; border-radius: 8px; overflow: hidden; }
+  .editor img { display: block; width: 100%; height: auto; }
+  .editor svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+  .editor svg .box { fill: rgba(47,91,212,.12); stroke: #2f5bd4; stroke-width: 2; cursor: move; }
+  .editor svg .box.selected { fill: rgba(211,47,47,.16); stroke: #d32f2f; }
+  .editor svg .handle { fill: #fff; stroke: #2f5bd4; stroke-width: 2; cursor: nwse-resize; }
+  .editor svg .handle.selected { stroke: #d32f2f; }
+  .editor svg .handle[data-h="n"], .editor svg .handle[data-h="s"] { cursor: ns-resize; }
+  .editor svg .handle[data-h="w"], .editor svg .handle[data-h="e"] { cursor: ew-resize; }
+  .editor svg .handle[data-h="ne"], .editor svg .handle[data-h="sw"] { cursor: nesw-resize; }
+  .results { list-style: none; padding: 0; margin: 12px 0 0; }
+  .results li { display: flex; gap: 10px; align-items: baseline; padding: 6px 8px;
+                border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+  .results li:hover { background: #f1f4f9; }
+  .results li.selected { background: #eef3ff; border-color: #2f5bd4; }
+  .results .num { color: #7b879c; font-size: 12px; min-width: 28px; }
+  .results .txt { direction: rtl; unicode-bidi: plaintext; font-size: 18px; flex: 1; }
+  .results .conf { color: #55637d; font-size: 12px; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -67,16 +91,25 @@ INDEX_HTML = """<!DOCTYPE html>
   <section>
     <h2>1. Распознать картинку</h2>
     <div id="drop">Перетащите сюда файл с текстом или кликните, чтобы выбрать<br>
-      <span class="meta">PNG / JPG, одна строка или целая страница</span></div>
+      <span class="meta">PNG / JPG; одна строка или целая страница</span></div>
     <input type="file" id="file" accept="image/*" hidden>
-    <div class="row">
-      <label class="meta"><input type="checkbox" id="segment" checked> разбивать на строки</label>
+    <div class="toolbar" id="toolbar" hidden>
+      <button id="btn-recognize">Распознать рамки</button>
+      <button class="ghost" id="btn-auto">Авто-разметка заново</button>
+      <button class="ghost" id="btn-add">+ Рамка</button>
+      <button class="ghost" id="btn-dup">Дублировать</button>
+      <button class="danger" id="btn-del">Удалить</button>
+      <button class="ghost" id="btn-clear">Убрать все</button>
+      <label class="meta"><input type="checkbox" id="lexicon"> словарь</label>
+      <span class="meta">рамки: тяните за уголки/стороны, «+ Рамка» — рисуйте новую; Delete — удалить выбранную</span>
     </div>
-    <div class="row">
-      <pre class="out" id="text-out"></pre>
+    <div class="editor" id="editor" hidden>
+      <img id="photo" alt="загруженная картинка">
+      <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
+    <ul class="results" id="results"></ul>
+    <div class="row"><pre class="out" id="text-out"></pre></div>
     <div class="meta" id="text-meta"></div>
-    <div class="row"><img class="preview" id="annotated" hidden></div>
   </section>
 
   <section>
@@ -103,39 +136,292 @@ INDEX_HTML = """<!DOCTYPE html>
   </section>
 </main>
 <script>
+// ---- элементы --------------------------------------------------------------
 const status = document.getElementById('status');
 const drop = document.getElementById('drop');
 const fileInput = document.getElementById('file');
-const textOut = document.getElementById('text-out');
-const textMeta = document.getElementById('text-meta');
-const annotated = document.getElementById('annotated');
+const editor = document.getElementById('editor');
+const photo = document.getElementById('photo');
+const overlay = document.getElementById('overlay');
+const toolbar = document.getElementById('toolbar');
+const resultsBox = document.getElementById('results');
+const lexiconBox = document.getElementById('lexicon');
+
+// ---- состояние -------------------------------------------------------------
+const state = {
+  blob: null,      // загруженный файл (переотправляется при изменении рамок)
+  natW: 0, natH: 0,
+  boxes: [],       // [[x0, y0, x1, y1], ...] в пикселях изображения
+  texts: [],       // [{text, confidence}, ...] по рамкам
+  selected: -1,
+  addMode: false,
+  busy: false,
+};
+let drag = null;
 
 function showStatus(s) { status.textContent = '| ' + s; }
 
-async function recognize(blob) {
-  showStatus('распознаю...');
-  const segment = document.getElementById('segment').checked;
-  const url = '/api/recognize' + (segment ? '' : '?segment=0');
-  const resp = await fetch(url, { method: 'POST', body: blob });
-  if (!resp.ok) { showStatus('ошибка'); textMeta.innerHTML =
-      '<span class="err">' + (await resp.text()) + '</span>'; return; }
-  const data = await resp.json();
-  textOut.textContent = data.text || '(пусто)';
-  textMeta.textContent = 'строк: ' + data.lines.length + ', средняя уверенность: ' +
-      (data.confidence * 100).toFixed(1) + '%, размер: ' + data.image_size.join('x');
-  if (data.annotated) { annotated.src = 'data:image/png;base64,' + data.annotated;
-      annotated.hidden = false; }
-  showStatus('готово');
+// размер ручек в пикселях изображения, чтобы на экране они были ~10 px
+function handleSize() {
+  const width = overlay.clientWidth || 1;
+  return Math.max(4, (state.natW / width) * 5);
+}
+
+function toImage(evt) {
+  const r = overlay.getBoundingClientRect();
+  return [
+    (evt.clientX - r.left) / (r.width || 1) * state.natW,
+    (evt.clientY - r.top) / (r.height || 1) * state.natH,
+  ];
+}
+
+// ---- отрисовка -------------------------------------------------------------
+function render() {
+  const hs = handleSize();
+  overlay.setAttribute('viewBox', '0 0 ' + state.natW + ' ' + state.natH);
+  overlay.setAttribute('preserveAspectRatio', 'none');
+  let html = '';
+  state.boxes.forEach((b, i) => {
+    const selected = i === state.selected;
+    const cls = 'box' + (selected ? ' selected' : '');
+    const x = Math.min(b[0], b[2]), y = Math.min(b[1], b[3]);
+    const w = Math.abs(b[2] - b[0]), h = Math.abs(b[3] - b[1]);
+    html += '<rect class="' + cls + '" data-idx="' + i + '" x="' + x + '" y="' + y +
+            '" width="' + w + '" height="' + h + '" vector-effect="non-scaling-stroke"/>';
+    if (selected) {
+      const cx = x + w / 2, cy = y + h / 2;
+      const points = [[x, y, 'nw'], [cx, y, 'n'], [x + w, y, 'ne'], [x + w, cy, 'e'],
+                      [x + w, y + h, 'se'], [cx, y + h, 's'], [x, y + h, 'sw'], [x, cy, 'w']];
+      for (const [px, py, name] of points) {
+        html += '<rect class="handle selected" data-idx="' + i + '" data-h="' + name +
+                '" x="' + (px - hs) + '" y="' + (py - hs) + '" width="' + (hs * 2) +
+                '" height="' + (hs * 2) + '" vector-effect="non-scaling-stroke"/>';
+      }
+    }
+  });
+  overlay.innerHTML = html;
+  renderResults();
+}
+
+function renderResults() {
+  resultsBox.innerHTML = state.boxes.map((b, i) => {
+    const info = state.texts[i] || { text: '', confidence: null };
+    const conf = (info.confidence === null || info.confidence === undefined)
+      ? '' : (info.confidence * 100).toFixed(0) + '%';
+    return '<li class="' + (i === state.selected ? 'selected' : '') + '" data-idx="' + i + '">' +
+           '<span class="num">#' + (i + 1) + '</span>' +
+           '<span class="txt">' + (info.text || '<span class="meta">(не распознано)</span>') + '</span>' +
+           '<span class="conf">' + conf + '</span></li>';
+  }).join('');
+}
+
+// ---- работа с сервером -----------------------------------------------------
+async function recognize(auto) {
+  if (!state.blob || state.busy) return;
+  state.busy = true;
+  showStatus(auto ? 'авто-разметка...' : 'распознаю...');
+  const headers = { 'X-Lexicon': lexiconBox.checked ? '1' : '0' };
+  if (!auto && state.boxes.length) {
+    headers['X-Boxes'] = JSON.stringify(state.boxes.map(b => b.map(v => Math.round(v))));
+  }
+  try {
+    const resp = await fetch('/api/recognize', { method: 'POST', headers, body: state.blob });
+    if (!resp.ok) {
+      showStatus('ошибка');
+      document.getElementById('text-meta').innerHTML =
+        '<span class="err">' + (await resp.text()) + '</span>';
+      return;
+    }
+    const data = await resp.json();
+    state.boxes = data.lines.map(line => line.box);
+    state.texts = data.lines.map(line => ({ text: line.text, confidence: line.confidence }));
+    state.selected = state.boxes.length ? 0 : -1;
+    render();
+    document.getElementById('text-out').textContent = data.text || '(пусто)';
+    document.getElementById('text-meta').textContent =
+      (data.auto_detected ? 'рамок найдено автоматически: ' : 'рамок задано вручную: ') +
+      data.lines.length + ' | средняя уверенность: ' + (data.confidence * 100).toFixed(1) +
+      '% | размер: ' + data.image_size.join('x');
+    showStatus('готово');
+  } catch (e) {
+    showStatus('ошибка: ' + e);
+  } finally {
+    state.busy = false;
+  }
+}
+
+// ---- загрузка файла --------------------------------------------------------
+function loadFile(file) {
+  state.blob = file;
+  showStatus('загружаю...');
+  photo.onload = () => {
+    state.natW = photo.naturalWidth;
+    state.natH = photo.naturalHeight;
+    state.boxes = [];
+    state.texts = [];
+    state.selected = -1;
+    editor.hidden = false;
+    toolbar.hidden = false;
+    render();
+    recognize(true);          // сразу показываем авто-разметку
+  };
+  photo.src = URL.createObjectURL(file);
+}
+
+function setAddMode(on) {
+  state.addMode = on;
+  document.getElementById('btn-add').classList.toggle('active', on);
+  showStatus(on ? 'нарисуйте новую рамку на картинке' : 'готово');
 }
 
 drop.onclick = () => fileInput.click();
-fileInput.onchange = () => { if (fileInput.files[0]) recognize(fileInput.files[0]); };
+fileInput.onchange = () => { if (fileInput.files[0]) loadFile(fileInput.files[0]); };
 ['dragenter', 'dragover'].forEach(e => drop.addEventListener(e, ev => {
   ev.preventDefault(); drop.classList.add('hover'); }));
 ['dragleave', 'drop'].forEach(e => drop.addEventListener(e, ev => {
   ev.preventDefault(); drop.classList.remove('hover'); }));
 drop.addEventListener('drop', ev => {
-  const f = ev.dataTransfer.files[0]; if (f) recognize(f); });
+  const f = ev.dataTransfer.files[0]; if (f) loadFile(f); });
+
+// ---- правка рамок: перетаскивание, ресайз, создание ------------------------
+overlay.addEventListener('pointerdown', evt => {
+  if (evt.button !== 0) return;
+  const target = evt.target;
+  const pos = toImage(evt);
+  if (target.dataset && target.dataset.h) {
+    const idx = Number(target.dataset.idx);
+    drag = { mode: 'resize', idx, handle: target.dataset.h, start: pos };
+  } else if (target.dataset && target.dataset.idx !== undefined) {
+    const idx = Number(target.dataset.idx);
+    state.selected = idx;
+    drag = { mode: 'move', idx, start: pos, orig: state.boxes[idx].slice() };
+    render();
+  } else if (state.addMode) {
+    const x = Math.max(0, Math.min(state.natW, pos[0]));
+    const y = Math.max(0, Math.min(state.natH, pos[1]));
+    state.boxes.push([x, y, x, y]);
+    state.texts.push({ text: '', confidence: null });
+    state.selected = state.boxes.length - 1;
+    drag = { mode: 'create', idx: state.selected, start: [x, y] };
+    setAddMode(false);
+    render();
+  } else {
+    state.selected = -1;
+    render();
+    return;
+  }
+  if (drag) {
+    if (drag.orig === undefined) drag.orig = state.boxes[drag.idx].slice();
+    overlay.setPointerCapture(evt.pointerId);
+    evt.preventDefault();
+  }
+});
+
+overlay.addEventListener('pointermove', evt => {
+  if (!drag) return;
+  const pos = toImage(evt);
+  const clampX = v => Math.max(0, Math.min(state.natW, v));
+  const clampY = v => Math.max(0, Math.min(state.natH, v));
+  const minSide = 4;
+  if (drag.mode === 'move') {
+    const [x0, y0, x1, y1] = drag.orig;
+    const w = x1 - x0, h = y1 - y0;
+    const nx = clampX(x0 + (pos[0] - drag.start[0]));
+    const ny = clampY(y0 + (pos[1] - drag.start[1]));
+    state.boxes[drag.idx] = [Math.min(nx, state.natW - w), Math.min(ny, state.natH - h),
+                             Math.min(nx, state.natW - w) + w, Math.min(ny, state.natH - h) + h];
+  } else if (drag.mode === 'resize') {
+    let [x0, y0, x1, y1] = drag.orig;
+    const px = clampX(pos[0]), py = clampY(pos[1]);
+    if (drag.handle.includes('w')) x0 = Math.min(px, x1 - minSide);
+    if (drag.handle.includes('e')) x1 = Math.max(px, x0 + minSide);
+    if (drag.handle.includes('n')) y0 = Math.min(py, y1 - minSide);
+    if (drag.handle.includes('s')) y1 = Math.max(py, y0 + minSide);
+    state.boxes[drag.idx] = [x0, y0, x1, y1];
+  } else if (drag.mode === 'create') {
+    state.boxes[drag.idx] = [Math.min(drag.start[0], clampX(pos[0])),
+                             Math.min(drag.start[1], clampY(pos[1])),
+                             Math.max(drag.start[0], clampX(pos[0])),
+                             Math.max(drag.start[1], clampY(pos[1]))];
+  }
+  // текст сбрасывается только если рамку действительно изменили
+  const before = drag.orig, after = state.boxes[drag.idx];
+  const moved = Math.abs(after[0] - before[0]) >= 1 || Math.abs(after[1] - before[1]) >= 1 ||
+                Math.abs(after[2] - before[2]) >= 1 || Math.abs(after[3] - before[3]) >= 1;
+  if (moved) state.texts[drag.idx] = { text: '', confidence: null };
+  render();
+  evt.preventDefault();
+});
+
+overlay.addEventListener('pointerup', evt => {
+  if (!drag) return;
+  const box = state.boxes[drag.idx];
+  const tooSmall = Math.abs(box[2] - box[0]) < 6 || Math.abs(box[3] - box[1]) < 6;
+  if (drag.mode === 'create' && tooSmall) {
+    state.boxes.splice(drag.idx, 1);
+    state.texts.splice(drag.idx, 1);
+    state.selected = -1;
+  }
+  drag = null;
+  render();
+  evt.preventDefault();
+});
+overlay.addEventListener('pointercancel', () => { drag = null; });
+
+// ---- список рамок и кнопки -------------------------------------------------
+resultsBox.addEventListener('click', evt => {
+  const item = evt.target.closest('li');
+  if (!item) return;
+  state.selected = Number(item.dataset.idx);
+  render();
+  overlay.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+});
+
+document.getElementById('btn-recognize').onclick = () => recognize(false);
+document.getElementById('btn-auto').onclick = () => recognize(true);
+document.getElementById('btn-add').onclick = () => setAddMode(!state.addMode);
+document.getElementById('btn-del').onclick = () => {
+  if (state.selected < 0) return showStatus('сначала выберите рамку');
+  state.boxes.splice(state.selected, 1);
+  state.texts.splice(state.selected, 1);
+  state.selected = -1;
+  render();
+  recognize(false);
+};
+document.getElementById('btn-dup').onclick = () => {
+  if (state.selected < 0) return showStatus('сначала выберите рамку');
+  const [x0, y0, x1, y1] = state.boxes[state.selected];
+  const shift = 8;
+  state.boxes.splice(state.selected + 1, 0,
+    [x0 + shift, y0 + shift, x1 + shift, y1 + shift]);
+  state.texts.splice(state.selected + 1, 0, { text: '', confidence: null });
+  state.selected += 1;
+  render();
+};
+document.getElementById('btn-clear').onclick = () => {
+  state.boxes = [];
+  state.texts = [];
+  state.selected = -1;
+  document.getElementById('text-out').textContent = '';
+  document.getElementById('text-meta').textContent = '';
+  render();
+  showStatus('рамки убраны');
+};
+
+document.addEventListener('keydown', evt => {
+  if (evt.key === 'Escape') { setAddMode(false); return; }
+  if ((evt.key === 'Delete' || evt.key === 'Backspace') && state.selected >= 0 &&
+      !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
+    state.boxes.splice(state.selected, 1);
+    state.texts.splice(state.selected, 1);
+    state.selected = -1;
+    render();
+    evt.preventDefault();
+  }
+});
+
+window.addEventListener('resize', () => { if (state.natW) render(); });
+
 
 document.getElementById('demo-run').onclick = async () => {
   const button = document.getElementById('demo-run');
@@ -193,8 +479,20 @@ class Handler(BaseHTTPRequestHandler):
     """Serves the page plus the /api endpoints."""
 
     recognizer: ocr.Recognizer | None = None
+    lexicon_recognizer: ocr.Recognizer | None = None
+    checkpoint: str | None = None
     lock = threading.Lock()
     server_version = "hwocr/0.1"
+
+    def _picker(self, lexicon: bool) -> "ocr.Recognizer":
+        """Recogniser with or without lexicon correction (cached)."""
+        if not lexicon:
+            return self.recognizer
+        if self.lexicon_recognizer is None:
+            self.lexicon_recognizer = ocr.Recognizer.load(
+                self.checkpoint or DEFAULT_CHECKPOINT, lexicon_decode=True
+            )
+        return self.lexicon_recognizer
 
     # -- helpers ---------------------------------------------------------
     def _send(self, code: int, body: bytes, content_type: str) -> None:
@@ -245,6 +543,24 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, f"{type(exc).__name__}: {exc}".encode("utf-8"), "text/plain")
 
     # -- endpoints -------------------------------------------------------
+    def _boxes_from_header(self) -> list[list[int]] | None:
+        """Optional hand-edited line boxes: ``X-Boxes: [[x0,y0,x1,y1], ...]``."""
+        raw = self.headers.get("X-Boxes")
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        boxes: list[list[int]] = []
+        for item in data if isinstance(data, list) else []:
+            if isinstance(item, (list, tuple)) and len(item) >= 4:
+                try:
+                    boxes.append([int(round(float(value))) for value in item[:4]])
+                except (TypeError, ValueError):
+                    continue
+        return boxes or None
+
     def _recognize(self, body: bytes, segment: bool = True) -> None:
         if not body:
             self._send_json({"error": "empty request body"}, code=400)
@@ -259,9 +575,12 @@ class Handler(BaseHTTPRequestHandler):
         if image is None or image.size == 0:
             self._send_json({"error": "unsupported image format"}, code=400)
             return
+        boxes = self._boxes_from_header()
+        lexicon = self.headers.get("X-Lexicon") == "1"
         with self.lock:  # one inference at a time: the machine has no GPU
-            page = self.recognizer.recognize_page(image, segment=segment)
+            page = self._picker(lexicon).recognize_page(image, segment=segment, boxes=boxes)
         payload = page.as_dict()
+        payload["auto_detected"] = boxes is None
         payload["annotated"] = _png_base64(_annotate(image, page))
         self._send_json(payload)
 
@@ -299,7 +618,9 @@ class Handler(BaseHTTPRequestHandler):
 def serve(checkpoint: str | Path = DEFAULT_CHECKPOINT, host: str = "127.0.0.1",
           port: int = 8009) -> None:
     """Load the checkpoint and serve the UI until interrupted."""
+    checkpoint = str(checkpoint)
     Handler.recognizer = ocr.Recognizer.load(checkpoint)
+    Handler.checkpoint = checkpoint
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"[web] hwocr UI on http://{host}:{port}  (checkpoint: {checkpoint})")
     print("[web] Ctrl+C to stop")
