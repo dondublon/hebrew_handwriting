@@ -1,0 +1,1 @@
+ python3 -m hwocr.cli serve --port 8009
