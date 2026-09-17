@@ -52,12 +52,21 @@ def split_runs(text: str) -> list[tuple[str, str]]:
     for strings that mix Hebrew and digits (e.g. ``"מתכנת 711"``).
     """
     runs: list[list] = []
+    previous_is_ltr = False
     for ch in text:
         cls = char_class(ch)
+        # A mark directly after a digit/Latin run stays glued to it ("1.", "12:"):
+        # that is how numbered items look in the documents, and gluing it keeps
+        # the transformation involutive.  Resolving such a mark against the
+        # paragraph direction instead (UAX#9 N1) makes the forward and the
+        # backward pass disagree, which `selftest` catches.
+        if cls == NEUTRAL and ch.strip() and previous_is_ltr:
+            cls = LTR
         if runs and runs[-1][0] == cls:
             runs[-1][1].append(ch)
         else:
             runs.append([cls, [ch]])
+        previous_is_ltr = cls == LTR
 
     for i, run in enumerate(runs):
         if run[0] != NEUTRAL:

@@ -42,6 +42,11 @@ class Config:
     max_word_len: int = 12
     p_real_word: float = 0.70     # probability of a real word vs. pseudo word
     p_digits: float = 0.06        # probability of a numeric token
+    # Punctuation the target documents actually use (see data/real/labels.tsv):
+    # numbered items ("1. חשמלית - נורה"), the hyphen as a separator between
+    # words and a heading colon ("... הם:").  Both rolls below use this
+    # probability, so one line can get a number *and* a hyphen.
+    p_punct: float = 0.30
     p_light_aug: float = 1.0      # probability of applying image augmentations at all
     p_heavy_aug: float = 0.35     # probability of the "photo/camera" pipeline
     real_repeats_target: int = 200   # virtual size of the hand-labelled set

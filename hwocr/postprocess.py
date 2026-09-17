@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Iterable, Sequence
 
+from . import charset
 from .metrics import edit_distance
 
 
@@ -25,6 +26,11 @@ class WordCorrector:
     """Replaces unknown words by their closest lexicon entries."""
 
     PREFIXES = "הובלמכש"  # one-letter prefixes of Hebrew words
+    # Marks that may surround a word: they are peeled off before the word is
+    # corrected and put back afterwards, so post-processing never eats the
+    # punctuation the recogniser produced ('הם:' stays 'הם:').  The hyphen is
+    # *not* here - it also occurs inside a word (see ``_correct_token``).
+    MARKS = charset.PUNCTUATION.replace("-", "")
 
     def __init__(self, words: Iterable[str], max_relative_distance: float = 0.34,
                  max_absolute_distance: int = 3, min_length: int = 3,
@@ -63,7 +69,7 @@ class WordCorrector:
 
         def flush() -> None:
             if word:
-                out.append(self.correct_word("".join(word)))
+                out.append(self._correct_token("".join(word)))
                 word.clear()
 
         for ch in text:
@@ -76,6 +82,31 @@ class WordCorrector:
         return "".join(out)
 
     # ------------------------------------------------------------------
+    def _split_marks(self, token: str) -> tuple[str, str, str]:
+        """Peels the surrounding marks off a token: (prefix, core, suffix)."""
+        start = 0
+        while start < len(token) and token[start] in self.MARKS:
+            start += 1
+        end = len(token)
+        while end > start and token[end - 1] in self.MARKS:
+            end -= 1
+        return token[:start], token[start:end], token[end:]
+
+    def _correct_token(self, token: str) -> str:
+        """Corrects one whitespace-separated token, keeping its marks.
+
+        ``הם:`` -> the core ``הם`` is looked up, the colon stays.  A hyphenated
+        compound is corrected part by part (``קול-מוזיקה``), a lone ``-`` is
+        left untouched, so the marks the recogniser produced survive.
+        """
+        prefix, core, suffix = self._split_marks(token)
+        if not core:
+            return token
+        parts = [self.correct_word(part) for part in core.split("-") if part]
+        if parts:
+            core = "-".join(parts)
+        return prefix + core + suffix
+
     def _matches(self, word: str) -> str | None:
         """Closest lexicon word within the correction threshold (``None`` if none)."""
         if not word:
@@ -163,14 +194,18 @@ class WordCorrector:
 
             split_words: list[str] = []
             for word in words:
-                if len(word) >= 2 * self.min_part and not self._matches(word):
-                    options = self._parts(word)
+                prefix, core, suffix = self._split_marks(word)
+                if len(core) >= 2 * self.min_part and not self._matches(core):
+                    options = self._parts(core)
                     if options:
                         # сами части корректируются дальше, по словам
                         best = options[0]
                         if len(best) > 1:
-                            split_words.extend(
-                                self._matches(part) or part for part in best)
+                            parts = [self._matches(part) or part for part in best]
+                            # знаки остаются на своих местах
+                            parts[0] = prefix + parts[0]
+                            parts[-1] = parts[-1] + suffix
+                            split_words.extend(parts)
                             changed = True
                             continue
                 split_words.append(word)

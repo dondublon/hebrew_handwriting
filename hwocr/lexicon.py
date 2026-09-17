@@ -78,6 +78,24 @@ def load_user_lexicon(path: str | Path) -> list[str]:
     return [word for word in text.split() if word]
 
 
+def split_dictionary_words(text: str) -> list[str]:
+    """Words of ``text`` in dictionary form.
+
+    Punctuation is stripped (``הם:`` -> ``הם``, ``1.`` -> ``1``) and a
+    hyphenated compound is split into its parts (``קול-מוזיקה`` -> ``קול``,
+    ``מוזיקה``); a lone ``-`` disappears.  Used to grow the document
+    vocabulary from hand-labelled lines - the word list must contain words,
+    not marks, otherwise the lexicon post-processing gets confused.
+    """
+    words: list[str] = []
+    for token in text.split():
+        for part in token.split("-"):
+            clean = part.strip(charset.PUNCTUATION)
+            if clean:
+                words.append(clean)
+    return words
+
+
 def append_words(path: str | Path, text: str) -> int:
     """Adds the words of ``text`` to a user word list; returns how many were new.
 
@@ -92,9 +110,8 @@ def append_words(path: str | Path, text: str) -> int:
         known = load_user_lexicon(path)
     seen = {word for word in known}
     added = 0
-    for word in text.split():
-        clean = word.strip()
-        if clean and clean not in seen:
+    for clean in split_dictionary_words(text):
+        if clean not in seen:
             known.append(clean)
             seen.add(clean)
             added += 1
@@ -140,6 +157,52 @@ def sample_number(rng: random.Random, allowed: set[str]) -> str:
     digits = [d for d in charset.DIGITS if d in allowed] or list(charset.DIGITS)
     length = rng.randint(1, 4)
     return "".join(rng.choice(digits) for _ in range(length))
+
+
+# Marks produced by :func:`sprinkle_punctuation`: '.'/':' sit at the end of a
+# word, '-' is a token of its own between two words ("חום - מים").
+WORD_MARKS = ".:"
+SEPARATOR_MARK = "-"
+
+
+def sprinkle_punctuation(
+    rng: random.Random,
+    words: Sequence[str],
+    allowed: set[str],
+    cfg: Config,
+) -> list[str]:
+    """Adds punctuation the way the target documents use it.
+
+    Two independent rolls, both governed by ``cfg.p_punct``:
+
+    * a leading numbered item - ``1.``, ``4.`` (numbered lists on the boards);
+    * one mark inside the line - a hyphen separator (``חום - מים``), a heading
+      colon (``הם:``) or a sentence-final period.
+
+    Only marks the font can render are used, so the synthetic text always
+    matches what :mod:`hwocr.render` is able to draw.
+    """
+    if not words:
+        return list(words)
+    out = list(words)
+    # The mark is placed first: that way it can never end up glued to the
+    # number of a list item ("3. - ...").
+    if rng.random() < cfg.p_punct:
+        kinds = [kind for kind, mark in (("dash", SEPARATOR_MARK),
+                                        ("colon", ":"),
+                                        ("period", "."))
+                 if mark in allowed]
+        kind = rng.choice(kinds) if kinds else None
+        if kind == "dash" and len(out) >= 2:
+            index = rng.randrange(1, len(out))
+            out = out[:index] + [SEPARATOR_MARK] + out[index:]
+        elif kind == "colon":
+            out[-1] += ":"
+        elif kind == "period":
+            out[-1] += "."
+    if "." in allowed and rng.random() < cfg.p_punct:
+        out = [sample_number(rng, allowed) + "."] + out
+    return out
 
 
 def sample_word(
@@ -195,4 +258,9 @@ def sample_text(
         text = " ".join(words)
     if len(text) > max_len:
         text = text[:max_len].rstrip()
-    return text
+    if not text:
+        return text
+    # Punctuation goes in *after* the length trimming, otherwise a trailing
+    # '.' or ':' would be cut off again.
+    marked = sprinkle_punctuation(rng, text.split(" "), allowed, cfg)
+    return " ".join(token for token in marked if token)
